@@ -12,22 +12,12 @@
 async function(args) {
   // @include ./_shared.js
 
-  const pinia = helper.getPinia();
-  if (!pinia?._s) {
-    return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded" };
-  }
+  const session = await helper.ensureXiaohongshuSession({ actionUrl: "https://www.xiaohongshu.com/explore" });
+  if (!session.ok) return session.result;
 
-  const userStore = helper.getStore("user");
-  if (!userStore) {
-    return { error: "User store not found", hint: "Ensure xiaohongshu.com is fully loaded" };
-  }
-  if (!userStore.loggedIn) {
-    return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore then log in manually" };
-  }
+  if (session.user) return session.user;
 
-  const directUser = helper.normalizeUser(userStore.userInfo) || helper.normalizeUser(userStore.userPageData?.basicInfo);
-  if (directUser) return directUser;
-
+  const userStore = session.userStore;
   const captured = await helper.captureJsonResponse(
     "/user/me",
     async () => {
@@ -47,7 +37,7 @@ async function(args) {
     { settleMs: 500 },
   );
 
-  const refreshedUser = helper.normalizeUser(userStore.userInfo) || helper.normalizeUser(userStore.userPageData?.basicInfo);
+  const refreshedUser = helper.getLoggedInUser(userStore);
   if (refreshedUser) return refreshedUser;
 
   const networkUser = helper.normalizeUser(captured?.data ?? captured);
@@ -55,8 +45,7 @@ async function(args) {
 
   return {
     error: captured?.msg || "Failed to get user info",
-    hint: userStore.loggedIn
-      ? "User store is logged in but profile data is not populated yet"
-      : "Not logged in?",
+    hint: "用户已登录，但资料还没有完成填充，请稍后重试",
+    action: "",
   };
 }

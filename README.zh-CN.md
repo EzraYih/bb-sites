@@ -115,7 +115,7 @@ bb-browser site reddit/thread <url>        # 带参数运行
 | 平台 | 命令 | 说明 |
 |------|------|------|
 | 即刻 | `jike/feed`, `jike/search` | 推荐 Feed、搜索动态 |
-| 小红书 | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts` | 完整小红书支持，基于 Pinia Store Actions |
+| 小红书 | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts`, `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/comments-page`, `xiaohongshu/comment-replies-page` | 完整小红书支持，含批量导出工作流原子能力 |
 
 > 所有小红书适配器使用 **Pinia Store Actions** — 调用页面自己的 Vue store 函数，走完整的签名 + 拦截器链路。零逆向。
 

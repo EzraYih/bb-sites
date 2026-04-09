@@ -115,7 +115,7 @@ bb-browser site reddit/thread <url>        # run with args
 | Platform | Commands | Description |
 |----------|----------|-------------|
 | Jike | `jike/feed`, `jike/search` | 即刻 — recommended feed & search |
-| Xiaohongshu | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts` | Profile, feed, search, note details, comments, and user posts |
+| Xiaohongshu | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts`, `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/comments-page`, `xiaohongshu/comment-replies-page` | Profile, feed, search, note details, comments, user posts, and workflow export primitives |
 
 > Xiaohongshu adapters now use a mix of current Pinia store state, in-page routing, and SSR state parsing. This avoids relying on stale XHR paths that no longer fire consistently on the live site.
 
@@ -165,6 +165,7 @@ Open a logged-in `https://www.xiaohongshu.com` tab before running these commands
 - `xiaohongshu/search` navigates to the real search route, waits for the current `search/notes` response, and supports the site's native sort options such as `latest`, `likes`, `comments`, and `collects`.
 - `xiaohongshu/note` and `xiaohongshu/comments` need a valid `xsec_token`. Pass a full note URL, or call `feed`, `search`, or `user_posts` first so the current browser session has the token cached.
 - `xiaohongshu/user_posts` parses the profile page SSR state instead of depending on old request assumptions.
+- `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/comments-page`, and `xiaohongshu/comment-replies-page` are workflow-oriented primitives for batch export. They keep machine-friendly field names and pagination contracts for downstream tools such as `bb-xhs-export`.
 
 Typical validation flow:
 
@@ -175,6 +176,10 @@ bb-browser site xiaohongshu/search "穿搭"
 bb-browser site xiaohongshu/note 6932814d000000001e034e67
 bb-browser site xiaohongshu/comments 6932814d000000001e034e67
 bb-browser site xiaohongshu/user_posts 67c99deb00000000070013e9
+bb-browser site xiaohongshu/search-page "穿搭" --sort likes --page 2
+bb-browser site xiaohongshu/note-detail 6932814d000000001e034e67
+bb-browser site xiaohongshu/comments-page 6932814d000000001e034e67
+bb-browser site xiaohongshu/comment-replies-page 6932814d000000001e034e67 1234567890
 ```
 
 ## Writing a Site Adapter
