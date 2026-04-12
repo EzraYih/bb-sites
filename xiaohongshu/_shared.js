@@ -86,10 +86,52 @@ globalThis.__bbBrowserXhsHelper = (() => {
     return normalizeUser(userStore?.userInfo) || normalizeUser(userStore?.userPageData?.basicInfo);
   }
 
+  function getLoginVerificationResult(actionUrl) {
+    const href = location.href || "";
+    const path = location.pathname || "";
+    const title = document.title || "";
+    const body = (document.body?.innerText || document.body?.textContent || "").replace(/\s+/g, " ").trim();
+    const markers = ["安全验证", "扫码验证身份", "验证码", "小红书APP", "问题反馈", "已登录该账号"];
+    const matched = markers.filter((marker) => href.includes(marker) || title.includes(marker) || body.includes(marker));
+    const isCaptchaPage = /\/website-login\/captcha/i.test(path);
+    const isLoginErrorPage = /\/website-login\/error/i.test(path);
+
+    if (!isCaptchaPage && !isLoginErrorPage && matched.length < 2) {
+      return null;
+    }
+
+    const hint = isCaptchaPage
+      ? "当前页面是小红书安全验证页，请先在浏览器里完成扫码/验证，然后重试"
+      : "请先在浏览器中登录小红书账号，然后重试";
+
+    return errorResult("HTTP 401", hint, buildOpenAction(actionUrl));
+  }
+
   async function ensureXiaohongshuSession(options = {}) {
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 12000);
     const actionUrl = firstNonEmpty(options.actionUrl, "https://www.xiaohongshu.com/explore");
+    const verificationResult = getLoginVerificationResult(actionUrl);
+    if (verificationResult) {
+      return {
+        ok: false,
+        pinia: null,
+        router: null,
+        userStore: null,
+        result: verificationResult,
+      };
+    }
+
     const ready = await waitForXiaohongshuAppReady(timeoutMs);
+    const verificationAfterWait = getLoginVerificationResult(actionUrl);
+    if (verificationAfterWait) {
+      return {
+        ok: false,
+        pinia: ready?.pinia || null,
+        router: ready?.router || null,
+        userStore: ready?.userStore || null,
+        result: verificationAfterWait,
+      };
+    }
 
     if (!ready?.pinia?._s || !ready?.userStore) {
       return {
@@ -815,9 +857,9 @@ globalThis.__bbBrowserXhsHelper = (() => {
     const path = location.pathname || "";
     const title = document.title || "";
     const body = (document.body?.innerText || document.body?.textContent || "").replace(/\s+/g, " ").trim();
-    const markers = ["安全限制", "访问频繁", "请稍后再试", "300013"];
+    const markers = ["安全限制", "访问频繁", "请稍后再试", "300013", "安全验证", "扫码验证身份"];
     const matched = markers.filter((marker) => href.includes(marker) || title.includes(marker) || body.includes(marker));
-    return /\/website-login\/error/i.test(path) || matched.length >= 2 || matched.includes("300013");
+    return /\/website-login\/(error|captcha)/i.test(path) || matched.length >= 2 || matched.includes("300013");
   }
 
   function getWebpackRequire() {
