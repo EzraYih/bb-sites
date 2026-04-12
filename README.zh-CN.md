@@ -119,6 +119,21 @@ bb-browser site reddit/thread <url>        # 带参数运行
 
 > 所有小红书适配器使用 **Pinia Store Actions** — 调用页面自己的 Vue store 函数，走完整的签名 + 拦截器链路。零逆向。
 
+#### 小红书适配器详细说明
+
+| 命令 | 说明 | 参数 |
+|------|------|------|
+| `xiaohongshu/me` | 获取当前登录用户信息 | 无 |
+| `xiaohongshu/feed` | 获取首页推荐 Feed 流 | 无 |
+| `xiaohongshu/search` | 搜索笔记，返回所有结果 | `keyword` (必填), `sort` (可选: general/latest/likes/comments/collects) |
+| `xiaohongshu/note` | 获取单篇笔记详情 | `note_id` (必填: 笔记ID或完整笔记URL) |
+| `xiaohongshu/comments` | 获取笔记的全部评论 | `note_id` (必填) |
+| `xiaohongshu/user_posts` | 获取指定用户的笔记列表 | `user_id` (必填) |
+| `xiaohongshu/search-page` | 搜索单页结果（支持分页导出，用于工作流批量抓取） | `keyword` (必填), `sort` (可选: general/默认综合, latest/最新, likes/最多点赞, comments/最多评论, collects/最多收藏), `page` (可选, 默认1, 从1开始的页码), `limit` (可选, 默认20, 每页返回的笔记数) |
+| `xiaohongshu/note-detail` | 获取笔记详情（工作流导出格式，含更多字段） | `note_id` (必填), `xsec_token` (可选) |
+| `xiaohongshu/comments-page` | 获取一级评论分页（支持游标分页，用于工作流批量抓取） | `note_id` (必填), `xsec_token` (可选), `cursor` (可选, 用于翻页的游标), `limit` (可选, 默认50, 每页返回的评论数) |
+| `xiaohongshu/comment-replies-page` | 获取楼中楼回复分页（用于工作流批量抓取） | `note_id` (必填), `comment_id` (必填, 一级评论ID), `xsec_token` (可选), `cursor` (可选), `limit` (可选, 默认100) |
+
 ## 使用示例
 
 ```bash

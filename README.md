@@ -119,6 +119,21 @@ bb-browser site reddit/thread <url>        # run with args
 
 > Xiaohongshu adapters now use a mix of current Pinia store state, in-page routing, and SSR state parsing. This avoids relying on stale XHR paths that no longer fire consistently on the live site.
 
+#### Xiaohongshu Adapter Details
+
+| Command | Description | Parameters |
+|---------|-------------|------------|
+| `xiaohongshu/me` | Get current logged-in user info | none |
+| `xiaohongshu/feed` | Get home feed (recommended) | none |
+| `xiaohongshu/search` | Search notes (all results) | `keyword` (required), `sort` (optional: general/latest/likes/comments/collects) |
+| `xiaohongshu/note` | Get single note details | `note_id` (required: note ID or full note URL) |
+| `xiaohongshu/comments` | Get all comments for a note | `note_id` (required) |
+| `xiaohongshu/user_posts` | Get user's posts | `user_id` (required) |
+| `xiaohongshu/search-page` | Search one page (for workflow batch export) | `keyword` (required), `sort` (optional: general/default, latest, likes, comments, collects), `page` (optional, default 1), `limit` (optional, default 20) |
+| `xiaohongshu/note-detail` | Get note details (workflow export format, more fields) | `note_id` (required), `xsec_token` (optional) |
+| `xiaohongshu/comments-page` | Get one page of top-level comments (cursor-based, for workflow batch) | `note_id` (required), `xsec_token` (optional), `cursor` (optional), `limit` (optional, default 50) |
+| `xiaohongshu/comment-replies-page` | Get comment replies (for workflow batch export) | `note_id` (required), `comment_id` (required), `xsec_token` (optional), `cursor` (optional), `limit` (optional, default 100) |
+
 ## Usage Examples
 
 ```bash
