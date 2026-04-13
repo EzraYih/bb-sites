@@ -44,6 +44,8 @@ async function(args) {
   try {
     detail = await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, false);
   } catch (error) {
+    const sessionState = await helper.ensureXiaohongshuSession({ actionUrl: resolved.url || "https://www.xiaohongshu.com/explore" });
+    if (!sessionState.ok) return sessionState.result;
     return helper.errorResult(
       error?.message || "Note fetch failed",
       "笔记可能不存在、已删除，或当前会话没有权限访问",

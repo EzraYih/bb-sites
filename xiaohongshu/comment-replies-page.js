@@ -8,7 +8,8 @@
     "comment_id": {"required": true, "description": "Top-level comment ID"},
     "xsec_token": {"required": false, "description": "Optional xsec token"},
     "cursor": {"required": false, "description": "Cursor for the next replies page"},
-    "limit": {"required": false, "description": "Max replies returned from this page"}
+    "limit": {"required": false, "description": "Max replies returned from this page"},
+    "context_warmup_ms": {"required": false, "description": "Optional extra idle time after opening the note context before the first replies request"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -31,6 +32,7 @@ async function(args) {
 
   const requestedCursor = helper.firstNonEmpty(args.cursor);
   const requestedLimit = Math.max(1, Number.parseInt(String(args.limit ?? "100"), 10) || 100);
+  const contextWarmupMs = Math.max(0, Number.parseInt(String(args.context_warmup_ms ?? "0"), 10) || 0);
   const pinia = session.pinia;
 
   if (!pinia?._s) {
@@ -63,8 +65,15 @@ async function(args) {
   }
 
   try {
-    await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, false);
+    await helper.ensureNoteCommentApiContext(resolved.noteId, resolved.xsecToken, {
+      warmupMs: contextWarmupMs,
+    });
   } catch (error) {
+    if (helper.isSecurityRestrictionPage() || helper.isSecurityRestrictionError(error)) {
+      return helper.buildSecurityRestrictionResult(resolved.url || "https://www.xiaohongshu.com/explore");
+    }
+    const sessionState = await helper.ensureXiaohongshuSession({ actionUrl: resolved.url || "https://www.xiaohongshu.com/explore" });
+    if (!sessionState.ok) return sessionState.result;
     return helper.errorResult(
       error?.message || "Replies fetch failed",
       "笔记可能不存在、已删除，或当前会话没有权限访问",
@@ -82,6 +91,11 @@ async function(args) {
       requestedLimit,
     );
   } catch (error) {
+    if (helper.isSecurityRestrictionPage() || helper.isSecurityRestrictionError(error)) {
+      return helper.buildSecurityRestrictionResult(resolved.url || "https://www.xiaohongshu.com/explore");
+    }
+    const sessionState = await helper.ensureXiaohongshuSession({ actionUrl: resolved.url || "https://www.xiaohongshu.com/explore" });
+    if (!sessionState.ok) return sessionState.result;
     return helper.errorResult(
       error?.message || "Replies page load failed",
       requestedCursor

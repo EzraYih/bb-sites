@@ -177,6 +177,186 @@ globalThis.__bbBrowserXhsHelper = (() => {
     };
   }
 
+  function getPageSignals() {
+    return {
+      href: location.href || "",
+      path: location.pathname || "",
+      title: document.title || "",
+      body: (document.body?.innerText || document.body?.textContent || "").replace(/\s+/g, " ").trim(),
+    };
+  }
+
+  function findMatchedMarkers(signals, markers) {
+    return markers.filter((marker) => (
+      signals.href.includes(marker)
+      || signals.title.includes(marker)
+      || signals.body.includes(marker)
+    ));
+  }
+
+  function buildSecurityRestrictionResult(actionUrl) {
+    return errorResult(
+      "HTTP 429",
+      "\u5f53\u524d\u9875\u9762\u89e6\u53d1\u5c0f\u7ea2\u4e66\u5b89\u5168\u9650\u5236\uff0c\u8bbf\u95ee\u8fc7\u4e8e\u9891\u7e41\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\uff0c\u65e0\u9700\u91cd\u65b0\u767b\u5f55",
+      buildOpenAction(actionUrl),
+    );
+  }
+
+  function getSecurityRestrictionResult(actionUrl) {
+    const signals = getPageSignals();
+    const markers = [
+      "\u5b89\u5168\u9650\u5236",
+      "\u8bbf\u95ee\u9891\u7e41",
+      "\u8bf7\u7a0d\u540e\u518d\u8bd5",
+      "300013",
+    ];
+    const matched = findMatchedMarkers(signals, markers);
+    const isSecurityErrorPage = /\/website-login\/error/i.test(signals.path);
+
+    if (!isSecurityErrorPage && matched.length < 2 && !matched.includes("300013")) {
+      return null;
+    }
+
+    return buildSecurityRestrictionResult(actionUrl);
+  }
+
+  function getLoginVerificationResult(actionUrl) {
+    const signals = getPageSignals();
+    const markers = [
+      "\u5b89\u5168\u9a8c\u8bc1",
+      "\u626b\u7801\u9a8c\u8bc1\u8eab\u4efd",
+      "\u9a8c\u8bc1\u7801",
+      "\u5c0f\u7ea2\u4e66APP",
+      "\u95ee\u9898\u53cd\u9988",
+      "\u5df2\u767b\u5f55\u8be5\u8d26\u53f7",
+    ];
+    const matched = findMatchedMarkers(signals, markers);
+    const isCaptchaPage = /\/website-login\/captcha/i.test(signals.path);
+
+    if (!isCaptchaPage && matched.length < 2) {
+      return null;
+    }
+
+    const hint = isCaptchaPage
+      ? "\u5f53\u524d\u9875\u9762\u662f\u5c0f\u7ea2\u4e66\u5b89\u5168\u9a8c\u8bc1\u9875\uff0c\u8bf7\u5148\u5728\u6d4f\u89c8\u5668\u91cc\u5b8c\u6210\u626b\u7801/\u9a8c\u8bc1\uff0c\u7136\u540e\u91cd\u8bd5"
+      : "\u8bf7\u5148\u5728\u6d4f\u89c8\u5668\u4e2d\u767b\u5f55\u5c0f\u7ea2\u4e66\u8d26\u53f7\uff0c\u7136\u540e\u91cd\u8bd5";
+
+    return errorResult("HTTP 401", hint, buildOpenAction(actionUrl));
+  }
+
+  function isSecurityRestrictionError(error) {
+    const text = [
+      error?.message,
+      error?.msg,
+      error?.response?.data?.msg,
+      error?.response?.data?.message,
+      error?.responseCode,
+      error?.response?.data?.code,
+      String(error ?? ""),
+    ].filter(Boolean).join(" ");
+    const markers = [
+      "\u5b89\u5168\u9650\u5236",
+      "\u8bbf\u95ee\u9891\u7e41",
+      "\u8bf7\u7a0d\u540e\u518d\u8bd5",
+      "300013",
+      "HTTP 429",
+      "security restriction",
+    ];
+    return markers.some((marker) => text.includes(marker));
+  }
+
+  async function ensureXiaohongshuSession(options = {}) {
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 12000);
+    const actionUrl = firstNonEmpty(options.actionUrl, "https://www.xiaohongshu.com/explore");
+    const securityRestrictionResult = getSecurityRestrictionResult(actionUrl);
+    if (securityRestrictionResult) {
+      return {
+        ok: false,
+        pinia: null,
+        router: null,
+        userStore: null,
+        result: securityRestrictionResult,
+      };
+    }
+
+    const verificationResult = getLoginVerificationResult(actionUrl);
+    if (verificationResult) {
+      return {
+        ok: false,
+        pinia: null,
+        router: null,
+        userStore: null,
+        result: verificationResult,
+      };
+    }
+
+    const ready = await waitForXiaohongshuAppReady(timeoutMs);
+    const securityRestrictionAfterWait = getSecurityRestrictionResult(actionUrl);
+    if (securityRestrictionAfterWait) {
+      return {
+        ok: false,
+        pinia: ready?.pinia || null,
+        router: ready?.router || null,
+        userStore: ready?.userStore || null,
+        result: securityRestrictionAfterWait,
+      };
+    }
+
+    const verificationAfterWait = getLoginVerificationResult(actionUrl);
+    if (verificationAfterWait) {
+      return {
+        ok: false,
+        pinia: ready?.pinia || null,
+        router: ready?.router || null,
+        userStore: ready?.userStore || null,
+        result: verificationAfterWait,
+      };
+    }
+
+    if (!ready?.pinia?._s || !ready?.userStore) {
+      return {
+        ok: false,
+        pinia: ready?.pinia || null,
+        router: ready?.router || null,
+        userStore: ready?.userStore || null,
+        result: errorResult(
+          "Page not ready",
+          "\u5c0f\u7ea2\u4e66\u9875\u9762\u5df2\u6253\u5f00\uff0c\u4f46\u524d\u7aef\u72b6\u6001\u8fd8\u6ca1\u521d\u59cb\u5316\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5",
+          buildOpenAction(actionUrl),
+        ),
+      };
+    }
+
+    const userStore = ready.userStore;
+    let currentUser = getLoggedInUser(userStore);
+    if (toBoolean(userStore.loggedIn) || currentUser) {
+      return { ok: true, pinia: ready.pinia, router: ready.router, userStore, user: currentUser };
+    }
+
+    if (typeof userStore.getUserInfo === "function") {
+      try {
+        await withTimeout(userStore.getUserInfo(), 4000, "User info load timed out");
+      } catch {}
+    }
+
+    currentUser = getLoggedInUser(userStore);
+    if (toBoolean(userStore.loggedIn) || currentUser) {
+      return { ok: true, pinia: ready.pinia, router: ready.router, userStore, user: currentUser };
+    }
+
+    return {
+      ok: false,
+      pinia: ready.pinia,
+      router: ready.router,
+      userStore,
+      result: errorResult(
+        "HTTP 401",
+        "\u8bf7\u5148\u5728\u6d4f\u89c8\u5668\u4e2d\u767b\u5f55\u5c0f\u7ea2\u4e66\u8d26\u53f7\uff0c\u7136\u540e\u91cd\u8bd5",
+        buildOpenAction(actionUrl),
+      ),
+    };
+  }
+
   function firstNonEmpty(...values) {
     for (const value of values) {
       if (value == null) continue;
@@ -731,6 +911,34 @@ globalThis.__bbBrowserXhsHelper = (() => {
     return globalThis.__bbBrowserXhsCommentCache;
   }
 
+  function getCommentApiContextCache() {
+    if (!globalThis.__bbBrowserXhsCommentApiContextCache) {
+      globalThis.__bbBrowserXhsCommentApiContextCache = {};
+    }
+    return globalThis.__bbBrowserXhsCommentApiContextCache;
+  }
+
+  function getCachedCommentApiContext(noteId) {
+    if (!noteId) return null;
+    return getCommentApiContextCache()[String(noteId)] || null;
+  }
+
+  function rememberCommentApiContext(noteId, xsecToken, extra = {}) {
+    if (!noteId) return null;
+    const cache = getCommentApiContextCache();
+    const key = String(noteId);
+    const next = {
+      note_id: key,
+      xsec_token: xsecToken ? String(xsecToken) : null,
+      warmed_at: new Date().toISOString(),
+      path: location.pathname || "",
+      href: location.href || "",
+      ...extra,
+    };
+    cache[key] = next;
+    return next;
+  }
+
   function getNoteCommentCache(noteId) {
     const cache = getCommentCache();
     const key = noteId ? String(noteId) : "";
@@ -824,13 +1032,57 @@ globalThis.__bbBrowserXhsHelper = (() => {
     ));
   }
 
+  function getCurrentNoteIdFromLocation() {
+    const match = (location.pathname || "").match(/\/explore\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  }
+
+  function getNoteDetailEntry(noteStore, noteId) {
+    if (!noteStore || !noteId) return null;
+    const current = noteStore.noteDetailMap?.[noteId];
+    if (!current?.note || current.note.noteId !== noteId) return null;
+    return current;
+  }
+
+  function hasLoadedNoteComments(detail) {
+    if (!detail) return false;
+    const commentsState = detail.comments;
+    if (!commentsState) return false;
+    const list = commentsState.list;
+    if (Array.isArray(list) && list.length > 0) {
+      return true;
+    }
+    return toBoolean(commentsState.firstRequestFinish);
+  }
+
+  function canReuseCurrentNoteContext(noteStore, noteId, requireComments = false) {
+    const currentPathNoteId = getCurrentNoteIdFromLocation();
+    const currentStoreNoteId = firstNonEmpty(
+      noteStore?.currentNoteId,
+      noteStore?.noteId,
+      noteStore?.currentNote?.noteId,
+      currentPathNoteId,
+    );
+    if (!currentStoreNoteId || String(currentStoreNoteId) !== String(noteId)) {
+      return false;
+    }
+    const detail = getNoteDetailEntry(noteStore, noteId);
+    if (!detail) return false;
+    if (!requireComments) return true;
+    return hasLoadedNoteComments(detail);
+  }
+
   async function openNoteAndWait(noteId, xsecToken, requireComments = false) {
     if (!noteId || !xsecToken) throw new Error("Missing note id or xsec token");
     const noteStore = getStore("note");
     if (!noteStore) throw new Error("Note store not found");
-    await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
+    const reusedCurrentContext = canReuseCurrentNoteContext(noteStore, noteId, requireComments);
+    if (!reusedCurrentContext) {
+      await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
+    }
     if (noteStore.setCurrentNoteId) noteStore.setCurrentNoteId(noteId);
-    if (noteStore.getNoteDetailByNoteId) {
+    const currentDetail = getNoteDetailEntry(noteStore, noteId);
+    if (!currentDetail && noteStore.getNoteDetailByNoteId) {
       try {
         await withTimeout(noteStore.getNoteDetailByNoteId(noteId), 6000, "Note detail load timed out");
       } catch {}
@@ -852,6 +1104,42 @@ globalThis.__bbBrowserXhsHelper = (() => {
     return detail;
   }
 
+  async function ensureNoteCommentApiContext(noteId, xsecToken, options = {}) {
+    if (!noteId || !xsecToken) throw new Error("Missing note id or xsec token");
+    const noteStore = getStore("note");
+    if (!noteStore) throw new Error("Note store not found");
+
+    const currentContextReusable = canReuseCurrentNoteContext(noteStore, noteId, false);
+    const cachedContext = getCachedCommentApiContext(noteId);
+    const cacheMatches = cachedContext
+      && cachedContext.note_id === String(noteId)
+      && cachedContext.xsec_token === String(xsecToken)
+      && currentContextReusable;
+
+    if (cacheMatches) {
+      return {
+        detail: getNoteDetailEntry(noteStore, noteId),
+        reused: true,
+        warmed: false,
+        cache: cachedContext,
+      };
+    }
+
+    const detail = await openNoteAndWait(noteId, xsecToken, false);
+    const cache = rememberCommentApiContext(noteId, xsecToken);
+    const warmupMs = Math.max(0, Number(options.warmupMs) || 0);
+    if (warmupMs > 0) {
+      await sleep(warmupMs);
+    }
+    return {
+      detail,
+      reused: false,
+      warmed: true,
+      cache,
+    };
+  }
+
+  /*
   function isSecurityRestrictionPage() {
     const href = location.href || "";
     const path = location.pathname || "";
@@ -860,6 +1148,11 @@ globalThis.__bbBrowserXhsHelper = (() => {
     const markers = ["安全限制", "访问频繁", "请稍后再试", "300013", "安全验证", "扫码验证身份"];
     const matched = markers.filter((marker) => href.includes(marker) || title.includes(marker) || body.includes(marker));
     return /\/website-login\/(error|captcha)/i.test(path) || matched.length >= 2 || matched.includes("300013");
+  }
+
+  */
+  function isSecurityRestrictionPage() {
+    return Boolean(getSecurityRestrictionResult("https://www.xiaohongshu.com/explore"));
   }
 
   function getWebpackRequire() {
@@ -1252,6 +1545,9 @@ globalThis.__bbBrowserXhsHelper = (() => {
     errorResult,
     waitForXiaohongshuAppReady,
     getLoggedInUser,
+    buildSecurityRestrictionResult,
+    getSecurityRestrictionResult,
+    isSecurityRestrictionError,
     ensureXiaohongshuSession,
     firstNonEmpty,
     numberOrNull,
@@ -1287,6 +1583,9 @@ globalThis.__bbBrowserXhsHelper = (() => {
     getTopLevelComments,
     findRootComment,
     getCommentCache,
+    getCommentApiContextCache,
+    getCachedCommentApiContext,
+    rememberCommentApiContext,
     getNoteCommentCache,
     rememberRootComments,
     findRememberedRootComment,
@@ -1296,6 +1595,7 @@ globalThis.__bbBrowserXhsHelper = (() => {
     getReplyCursor,
     getReplyHasMore,
     openNoteAndWait,
+    ensureNoteCommentApiContext,
     isSecurityRestrictionPage,
     getWebpackRequire,
     getWebpackCommentApi,

@@ -209,6 +209,8 @@ async function(args) {
       captured = await requestSearchPage(true);
     }
   } catch (error) {
+    const sessionState = await helper.ensureXiaohongshuSession({ actionUrl: "https://www.xiaohongshu.com/search_result" });
+    if (!sessionState.ok) return sessionState.result;
     return helper.errorResult(
       error?.message || "Search failed",
       "请在已打开并完成加载的小红书页面上重试",
@@ -217,6 +219,9 @@ async function(args) {
   }
 
   if (captured && captured.success === false) {
+    if (helper.isSecurityRestrictionError(captured)) {
+      return helper.buildSecurityRestrictionResult("https://www.xiaohongshu.com/search_result");
+    }
     return helper.errorResult(
       captured.msg || "Search failed",
       "搜索请求已发出，但返回结果不可用",
