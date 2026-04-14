@@ -115,7 +115,7 @@ bb-browser site reddit/thread <url>        # 带参数运行
 | 平台 | 命令 | 说明 |
 |------|------|------|
 | 即刻 | `jike/feed`, `jike/search` | 推荐 Feed、搜索动态 |
-| 小红书 | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts`, `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/comments-page`, `xiaohongshu/comment-replies-page` | 完整小红书支持，含批量导出工作流原子能力 |
+| 小红书 | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts`, `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/notes-chunk`, `xiaohongshu/comments-page`, `xiaohongshu/comment-replies-page`, `xiaohongshu/comments-chunk` | 完整小红书支持，含批量导出工作流原子能力、分块笔记详情抓取与分块评论抓取 |
 
 > 所有小红书适配器使用 **Pinia Store Actions** — 调用页面自己的 Vue store 函数，走完整的签名 + 拦截器链路。零逆向。
 
@@ -131,8 +131,37 @@ bb-browser site reddit/thread <url>        # 带参数运行
 | `xiaohongshu/user_posts` | 获取指定用户的笔记列表 | `user_id` (必填) |
 | `xiaohongshu/search-page` | 搜索单页结果（支持分页导出，用于工作流批量抓取） | `keyword` (必填), `sort` (可选: general/默认综合, latest/最新, likes/最多点赞, comments/最多评论, collects/最多收藏), `page` (可选, 默认1, 从1开始的页码), `limit` (可选, 默认20, 每页返回的笔记数) |
 | `xiaohongshu/note-detail` | 获取笔记详情（工作流导出格式，含更多字段） | `note_id` (必填), `xsec_token` (可选) |
+| `xiaohongshu/notes-chunk` | 在一次调用中分块抓取少量笔记详情（用于工作流批量导出） | `items_json` (必填), `max_items` (可选), `idle_min_ms` / `idle_max_ms` (可选) |
 | `xiaohongshu/comments-page` | 获取一级评论分页（支持游标分页，用于工作流批量抓取） | `note_id` (必填), `xsec_token` (可选), `cursor` (可选, 用于翻页的游标), `limit` (可选, 默认50, 每页返回的评论数) |
 | `xiaohongshu/comment-replies-page` | 获取楼中楼回复分页（用于工作流批量抓取） | `note_id` (必填), `comment_id` (必填, 一级评论ID), `xsec_token` (可选), `cursor` (可选), `limit` (可选, 默认100) |
+| `xiaohongshu/comments-chunk` | 在一次调用中分块推进多页一级评论与楼中楼回复（用于工作流批量导出） | `note_id` (必填), `xsec_token` (可选), `session_id` (可选), `state_json` (可选), `max_requests` (可选), `max_top_pages` (可选), `max_reply_pages` (可选), `context_warmup_ms` (可选), `idle_min_ms` / `idle_max_ms` (可选) |
+
+> 批量导出场景推荐组合使用 `xiaohongshu/search-page`、`xiaohongshu/notes-chunk` 与 `xiaohongshu/comments-chunk`：先按搜索摘要筛选笔记，再用 `notes-chunk` 分块抓详情，用 `comments-chunk` 分块抓评论。
+
+#### 小红书工作流说明
+
+- 当前仓库的 `feature/xhs-export` 分支，是和 `bb-browser` `0.11.3` `feature/xhs-export` 分支、`bb-xhs-export` 当前 `main` 分支配套使用的适配器集合。
+- 这套导出栈应直接检出到 `~/.bb-browser/bb-sites`。如果你正在使用小红书导出链路，请直接在这个仓库里 `git pull`，不要再用社区版 `bb-browser site update` 覆盖本地 fork 适配器。
+- `xiaohongshu/search-page`、`xiaohongshu/note-detail`、`xiaohongshu/notes-chunk`、`xiaohongshu/comments-page`、`xiaohongshu/comment-replies-page`、`xiaohongshu/comments-chunk` 都是面向批量导出的工作流原语，字段名和分页契约尽量保持机器友好，方便 `bb-xhs-export` 这类下游工具直接消费。
+- `xiaohongshu/notes-chunk` 是当前推荐的笔记详情批量抓取入口：一次调用里顺序打开少量入选笔记，返回详情结果与逐条失败信息，本身不维护会话状态，方便 exporter 保持轻量 checkpoint。
+- `xiaohongshu/comments-chunk` 是当前推荐的评论高吞吐入口：一次调用里推进多页一级评论和楼中楼回复，并返回可恢复的 session state。
+
+#### 小红书校验流程
+
+```bash
+bb-browser site xiaohongshu/me
+bb-browser site xiaohongshu/feed
+bb-browser site xiaohongshu/search "穿搭"
+bb-browser site xiaohongshu/note 6932814d000000001e034e67
+bb-browser site xiaohongshu/comments 6932814d000000001e034e67
+bb-browser site xiaohongshu/user_posts 67c99deb00000000070013e9
+bb-browser site xiaohongshu/search-page "穿搭" --sort likes --page 2
+bb-browser site xiaohongshu/note-detail 6932814d000000001e034e67
+bb-browser site xiaohongshu/notes-chunk --items_json '[{"note_id":"6932814d000000001e034e67","xsec_token":"<token>"}]' --max_items 2
+bb-browser site xiaohongshu/comments-page 6932814d000000001e034e67
+bb-browser site xiaohongshu/comment-replies-page 6932814d000000001e034e67 1234567890
+bb-browser site xiaohongshu/comments-chunk 6932814d000000001e034e67 --max_requests 12 --max_top_pages 2 --max_reply_pages 10
+```
 
 ## 使用示例
 
