@@ -233,6 +233,38 @@ async function(args) {
     queue.push(nextTask);
   }
 
+  function compareReplyTasks(left, right, heavyReplyThreshold) {
+    const leftHeavy = left.sub_comment_count >= heavyReplyThreshold ? 1 : 0;
+    const rightHeavy = right.sub_comment_count >= heavyReplyThreshold ? 1 : 0;
+    if (leftHeavy !== rightHeavy) return leftHeavy - rightHeavy;
+
+    const leftContinuation = Math.max(1, Number(left.reply_page_index) || 1) > 1 ? 1 : 0;
+    const rightContinuation = Math.max(1, Number(right.reply_page_index) || 1) > 1 ? 1 : 0;
+    if (leftContinuation !== rightContinuation) return leftContinuation - rightContinuation;
+
+    if (left.sub_comment_count !== right.sub_comment_count) {
+      return left.sub_comment_count - right.sub_comment_count;
+    }
+
+    if (left.reply_page_index !== right.reply_page_index) {
+      return left.reply_page_index - right.reply_page_index;
+    }
+
+    return String(left.comment_id).localeCompare(String(right.comment_id));
+  }
+
+  function takeNextReplyTask(queue, heavyReplyThreshold) {
+    if (!Array.isArray(queue) || queue.length === 0) return null;
+    let bestIndex = 0;
+    for (let index = 1; index < queue.length; index += 1) {
+      if (compareReplyTasks(queue[index], queue[bestIndex], heavyReplyThreshold) < 0) {
+        bestIndex = index;
+      }
+    }
+    const [task] = queue.splice(bestIndex, 1);
+    return task || null;
+  }
+
   function addCommentDelta(delta, seen, comment) {
     const commentId = helper.firstNonEmpty(comment?.comment_id, comment?.commentId);
     if (!commentId) return;
@@ -269,7 +301,7 @@ async function(args) {
   const contextWarmupMs = parseNonNegativeInt(args.context_warmup_ms, 0);
   const idleMinMs = parseNonNegativeInt(args.idle_min_ms, 0);
   const idleMaxMs = parseNonNegativeInt(args.idle_max_ms, idleMinMs);
-  const heavyReplyThreshold = parsePositiveInt(args.heavy_reply_threshold, 100);
+  const heavyReplyThreshold = parsePositiveInt(args.heavy_reply_threshold, 60);
   const reset = helper.toBoolean(args.reset);
   const sessionId = helper.firstNonEmpty(args.session_id, `comments:${resolved.noteId}`) || `comments:${resolved.noteId}`;
   const sessionStore = getChunkSessionStore();
@@ -368,7 +400,7 @@ async function(args) {
       && replyPagesFetched < maxReplyPages
       && state.reply_queue.length > 0
     ) {
-      const root = state.reply_queue.shift();
+      const root = takeNextReplyTask(state.reply_queue, heavyReplyThreshold);
       if (!root) break;
 
       await maybeIdle(requestCount, idleMinMs, idleMaxMs);

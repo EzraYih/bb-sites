@@ -1171,6 +1171,7 @@ globalThis.__bbBrowserXhsHelper = (() => {
     if (!noteStore) throw new Error("Note store not found");
 
     const currentContextReusable = canReuseCurrentNoteContext(noteStore, noteId, false);
+    const immediateDetail = getReadyNoteDetailEntry(noteStore, noteId, false, true);
     const cachedContext = getCachedCommentApiContext(noteId);
     const cacheMatches = cachedContext
       && cachedContext.note_id === String(noteId)
@@ -1183,6 +1184,16 @@ globalThis.__bbBrowserXhsHelper = (() => {
         reused: true,
         warmed: false,
         cache: cachedContext,
+      };
+    }
+
+    if (currentContextReusable && immediateDetail) {
+      const cache = rememberCommentApiContext(noteId, xsecToken);
+      return {
+        detail: immediateDetail,
+        reused: true,
+        warmed: false,
+        cache,
       };
     }
 
