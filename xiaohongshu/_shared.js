@@ -887,6 +887,15 @@ globalThis.__bbBrowserXhsHelper = (() => {
     return router.currentRoute?.value || null;
   }
 
+  function getRouteNoteId() {
+    const route = getRouter()?.currentRoute?.value || null;
+    const routePath = typeof route?.path === "string" ? route.path : "";
+    const routeFullPath = typeof route?.fullPath === "string" ? route.fullPath : "";
+    const candidate = firstNonEmpty(routePath, routeFullPath);
+    const match = candidate.match(/\/explore\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  }
+
   function getNoteDetail(noteId) {
     return getStore("note")?.noteDetailMap?.[noteId] || null;
   }
@@ -1044,6 +1053,36 @@ globalThis.__bbBrowserXhsHelper = (() => {
     return current;
   }
 
+  function hasQuickNoteDetailContent(detail) {
+    if (!detail?.note) return false;
+    return Boolean(
+      firstNonEmpty(
+        detail.note.title,
+        detail.note.desc,
+        detail.note.content,
+        detail.note.user?.nickname,
+        detail.note.user?.nickName,
+        detail.note.cover?.urlDefault,
+        detail.note.imageList?.[0]?.urlDefault,
+        detail.note.imagesList?.[0]?.urlDefault,
+        detail.note.video?.media?.stream?.h264?.[0]?.masterUrl,
+        detail.note.video?.media?.stream?.h265?.[0]?.masterUrl,
+      ),
+    );
+  }
+
+  function getReadyNoteDetailEntry(noteStore, noteId, requireComments = false, quickOnly = false) {
+    const current = getNoteDetailEntry(noteStore, noteId);
+    if (!current) return null;
+    if (!hasQuickNoteDetailContent(current) && !quickOnly) return null;
+    if (!requireComments) return current;
+    if (hasLoadedNoteComments(current)) {
+      rememberRootComments(noteId, current.comments?.list || []);
+      return current;
+    }
+    return quickOnly ? current : null;
+  }
+
   function hasLoadedNoteComments(detail) {
     if (!detail) return false;
     const commentsState = detail.comments;
@@ -1057,19 +1096,36 @@ globalThis.__bbBrowserXhsHelper = (() => {
 
   function canReuseCurrentNoteContext(noteStore, noteId, requireComments = false) {
     const currentPathNoteId = getCurrentNoteIdFromLocation();
+    const currentRouteNoteId = getRouteNoteId();
     const currentStoreNoteId = firstNonEmpty(
       noteStore?.currentNoteId,
       noteStore?.noteId,
       noteStore?.currentNote?.noteId,
+      currentRouteNoteId,
       currentPathNoteId,
     );
-    if (!currentStoreNoteId || String(currentStoreNoteId) !== String(noteId)) {
+    const detail = getNoteDetailEntry(noteStore, noteId);
+    const sameContext = currentStoreNoteId && String(currentStoreNoteId) === String(noteId);
+    if (!sameContext && !detail) {
       return false;
     }
-    const detail = getNoteDetailEntry(noteStore, noteId);
     if (!detail) return false;
     if (!requireComments) return true;
     return hasLoadedNoteComments(detail);
+  }
+
+  async function waitForNoteRoute(noteId, timeoutMs = 2500, intervalMs = 100) {
+    return await waitFor(() => {
+      const currentPathNoteId = getCurrentNoteIdFromLocation();
+      const currentRouteNoteId = getRouteNoteId();
+      const currentStoreNoteId = firstNonEmpty(
+        getStore("note")?.currentNoteId,
+        getStore("note")?.noteId,
+        getStore("note")?.currentNote?.noteId,
+      );
+      const matched = firstNonEmpty(currentStoreNoteId, currentRouteNoteId, currentPathNoteId);
+      return matched && String(matched) === String(noteId) ? true : null;
+    }, timeoutMs, intervalMs);
   }
 
   async function openNoteAndWait(noteId, xsecToken, requireComments = false) {
@@ -1077,27 +1133,32 @@ globalThis.__bbBrowserXhsHelper = (() => {
     const noteStore = getStore("note");
     if (!noteStore) throw new Error("Note store not found");
     const reusedCurrentContext = canReuseCurrentNoteContext(noteStore, noteId, requireComments);
+    const immediateDetail = getReadyNoteDetailEntry(noteStore, noteId, requireComments, true);
+    if (reusedCurrentContext && immediateDetail) {
+      return immediateDetail;
+    }
     if (!reusedCurrentContext) {
-      await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
+      await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 350);
+      await waitForNoteRoute(noteId, 2500, 100);
     }
     if (noteStore.setCurrentNoteId) noteStore.setCurrentNoteId(noteId);
-    const currentDetail = getNoteDetailEntry(noteStore, noteId);
-    if (!currentDetail && noteStore.getNoteDetailByNoteId) {
+    const currentDetail = getReadyNoteDetailEntry(noteStore, noteId, requireComments, true);
+    if (currentDetail && (!requireComments || hasLoadedNoteComments(currentDetail))) {
+      return currentDetail;
+    }
+    if (noteStore.getNoteDetailByNoteId) {
       try {
         await withTimeout(noteStore.getNoteDetailByNoteId(noteId), 6000, "Note detail load timed out");
       } catch {}
     }
     const detail = await waitFor(() => {
-      const current = noteStore.noteDetailMap?.[noteId];
-      if (!current?.note || current.note.noteId !== noteId) return null;
-      if (!requireComments) return current;
-      const list = current.comments?.list;
-      if (Array.isArray(list) && (list.length > 0 || current.comments?.firstRequestFinish)) {
-        rememberRootComments(noteId, list);
-        return current;
+      const ready = getReadyNoteDetailEntry(noteStore, noteId, requireComments, false);
+      if (ready) return ready;
+      if (!requireComments) {
+        return getReadyNoteDetailEntry(noteStore, noteId, false, true);
       }
       return null;
-    }, requireComments ? 12000 : 8000, 250);
+    }, requireComments ? 12000 : 8000, 120);
     if (!detail) {
       throw new Error(requireComments ? "Note comments not loaded" : "Note detail not loaded");
     }

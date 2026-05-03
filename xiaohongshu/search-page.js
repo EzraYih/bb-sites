@@ -7,7 +7,8 @@
     "keyword": {"required": true, "description": "Search keyword"},
     "sort": {"required": false, "description": "Sort: general (default), latest, likes, comments, collects"},
     "page": {"required": false, "description": "1-based page number"},
-    "limit": {"required": false, "description": "Max notes returned from this page"}
+    "limit": {"required": false, "description": "Max notes returned from this page"},
+    "session_json": {"required": false, "description": "Serialized incremental search session"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -59,7 +60,6 @@ async function(args) {
   const requestedSortInput = String(args.sort ?? "general").trim();
   const requestedSortKey = requestedSortInput.toLowerCase();
   const requestedSort = sortAliases[requestedSortKey] || sortAliases[requestedSortInput] || null;
-
   if (!requestedSort) {
     return {
       error: `Invalid sort: ${requestedSortInput}`,
@@ -102,6 +102,38 @@ async function(args) {
       ? sortGroup.filterTags.find((tag) => tag?.id === sortId)
       : null;
     return matched?.name || sortLabelFallbacks[sortId] || sortId;
+  }
+
+  function createSessionId() {
+    return `xhs-search:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function parseSessionJson(value) {
+    if (!value) return null;
+    try {
+      const parsed = JSON.parse(String(value));
+      if (!parsed || typeof parsed !== "object") return null;
+      const sessionId = typeof parsed.session_id === "string" ? parsed.session_id.trim() : "";
+      const keyword = typeof parsed.keyword === "string" ? parsed.keyword.trim() : "";
+      const sort = typeof parsed.sort === "string" ? parsed.sort.trim() : "";
+      const currentPage = Number.parseInt(String(parsed.current_page ?? "0"), 10);
+      const pageSize = Number.parseInt(String(parsed.page_size ?? "0"), 10);
+      if (!sessionId || !keyword || !sort || currentPage < 1 || pageSize < 1) {
+        return null;
+      }
+      return {
+        session_id: sessionId,
+        keyword,
+        sort,
+        current_page: currentPage,
+        page_size: pageSize,
+        search_id: typeof parsed.search_id === "string" && parsed.search_id.trim()
+          ? parsed.search_id.trim()
+          : null,
+      };
+    } catch {
+      return null;
+    }
   }
 
   // @include ./_shared.js
@@ -189,9 +221,67 @@ async function(args) {
     );
   }
 
+  function canReuseIncrementalSession(incomingSession) {
+    if (!incomingSession) return false;
+    if (incomingSession.keyword !== args.keyword || incomingSession.sort !== requestedSort) {
+      return false;
+    }
+    if (requestedPage !== incomingSession.current_page + 1) {
+      return false;
+    }
+    if ((location.pathname || "") !== "/search_result") {
+      return false;
+    }
+    if (!searchStore?.searchContext || !Array.isArray(searchStore?.feeds)) {
+      return false;
+    }
+    if (searchStore.feeds.length <= 0) {
+      return false;
+    }
+    const currentKeyword = String(
+      searchStore.searchValue
+      || searchStore.searchContext.keyword
+      || router.currentRoute?.value?.query?.keyword
+      || "",
+    ).trim();
+    if (currentKeyword && currentKeyword !== args.keyword) {
+      return false;
+    }
+    const currentSearchId = helper.firstNonEmpty(
+      searchStore?.searchContext?.searchId,
+      searchStore?.rootSearchId,
+      null,
+    );
+    if (incomingSession.search_id && currentSearchId && String(incomingSession.search_id) !== String(currentSearchId)) {
+      return false;
+    }
+    return true;
+  }
+
+  function buildSessionPayload(pageSize, currentPage, incomingSession) {
+    const currentSearchId = helper.firstNonEmpty(
+      searchStore?.searchContext?.searchId,
+      searchStore?.rootSearchId,
+      incomingSession?.search_id,
+    );
+    return {
+      session_id: helper.firstNonEmpty(
+        incomingSession?.session_id,
+        createSessionId(),
+      ),
+      keyword: args.keyword,
+      sort: requestedSort,
+      current_page: currentPage,
+      page_size: pageSize,
+      search_id: currentSearchId ? String(currentSearchId) : null,
+    };
+  }
+
   let availableFilters = [];
   let captured = null;
   let currentPage = 1;
+  const incomingSession = parseSessionJson(args.session_json);
+  let reusedSession = false;
 
   try {
     await waitForSearchRoute();
@@ -199,14 +289,21 @@ async function(args) {
       const filters = helper.toPlain(searchStore.filters || []);
       return Array.isArray(filters) && filters.length > 0 ? filters : null;
     }, 5000, 200) || helper.toPlain(searchStore.filters || []);
-    primeSearchContext(availableFilters);
-    captured = await requestSearchPage(false);
+    reusedSession = canReuseIncrementalSession(incomingSession);
 
-    while (currentPage < requestedPage) {
-      const hasMore = captured?.data?.has_more ?? searchStore?.hasMore;
-      if (hasMore === false) break;
-      currentPage += 1;
+    if (reusedSession) {
+      currentPage = incomingSession.current_page + 1;
       captured = await requestSearchPage(true);
+    } else {
+      primeSearchContext(availableFilters);
+      captured = await requestSearchPage(false);
+
+      while (currentPage < requestedPage) {
+        const hasMore = captured?.data?.has_more ?? searchStore?.hasMore;
+        if (hasMore === false) break;
+        currentPage += 1;
+        captured = await requestSearchPage(true);
+      }
     }
   } catch (error) {
     const sessionState = await helper.ensureXiaohongshuSession({ actionUrl: "https://www.xiaohongshu.com/search_result" });
@@ -230,6 +327,7 @@ async function(args) {
   }
 
   const pageSize = Number(searchStore?.searchContext?.pageSize || requestedLimit || 20);
+  const searchSession = buildSessionPayload(pageSize, currentPage, incomingSession);
   const aggregatedItems = Array.isArray(searchStore?.feeds) ? helper.toPlain(searchStore.feeds) : [];
   const responseItems = Array.isArray(captured?.data?.items) ? captured.data.items : null;
   const slicedItems = responseItems || aggregatedItems.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -265,5 +363,7 @@ async function(args) {
     count: notes.length,
     has_more: captured?.data?.has_more ?? searchStore?.hasMore ?? false,
     notes,
+    session: searchSession,
+    session_reused: reusedSession,
   };
 }
