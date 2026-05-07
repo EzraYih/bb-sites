@@ -115,7 +115,7 @@ bb-browser site reddit/thread <url>        # run with args
 | Platform | Commands | Description |
 |----------|----------|-------------|
 | Jike | `jike/feed`, `jike/search` | 即刻 — recommended feed & search |
-| Xiaohongshu | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts`, `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/notes-chunk`, `xiaohongshu/comments-chunk` | Profile, feed, search, note details, comments, user posts, and workflow export primitives, including chunked note detail and comment collection |
+| Xiaohongshu | `xiaohongshu/me`, `xiaohongshu/feed`, `xiaohongshu/search`, `xiaohongshu/note`, `xiaohongshu/comments`, `xiaohongshu/user_posts`, `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/notes-chunk`, `xiaohongshu/comments-chunk`, `xiaohongshu/comments-first-page`, `xiaohongshu/comment-thread-page` | Profile, feed, search, note details, comments, user posts, and workflow export primitives, including chunked note detail, first-page comment probing, and resumable single-thread comment collection |
 
 > Xiaohongshu adapters now use a mix of current Pinia store state, in-page routing, and SSR state parsing. This avoids relying on stale XHR paths that no longer fire consistently on the live site.
 
@@ -133,6 +133,8 @@ bb-browser site reddit/thread <url>        # run with args
 | `xiaohongshu/note-detail` | Get note details (workflow export format, more fields) | `note_id` (required), `xsec_token` (optional) |
 | `xiaohongshu/notes-chunk` | Collect a bounded chunk of note details in one call (for workflow export) | `items_json` (required), `max_items` (optional), `idle_min_ms` / `idle_max_ms` (optional) |
 | `xiaohongshu/comments-chunk` | Collect a bounded chunk of top-level comments + replies in one call (for workflow export) | `note_id` (required), `xsec_token` (optional), `session_id` (optional), `state_json` (optional), `max_requests` (optional), `max_top_pages` (optional), `max_reply_pages` (optional), `context_warmup_ms` (optional), `idle_min_ms` / `idle_max_ms` (optional) |
+| `xiaohongshu/comments-first-page` | Fetch the first comments page and decide whether the note can finish on a single light pass | `note_id` (required), `xsec_token` (optional), `top_limit` (optional), `context_warmup_ms` (optional) |
+| `xiaohongshu/comment-thread-page` | Fetch one reply page for exactly one root-comment thread | `note_id` (required), `root_comment_id` (required), `xsec_token` (optional), `reply_cursor` (optional), `reply_page_index` (optional), `reply_limit` (optional), `context_warmup_ms` (optional) |
 
 ## Usage Examples
 
@@ -185,6 +187,8 @@ Open a logged-in `https://www.xiaohongshu.com` tab before running these commands
 - `xiaohongshu/search-page`, `xiaohongshu/note-detail`, `xiaohongshu/notes-chunk`, and `xiaohongshu/comments-chunk` are workflow-oriented primitives for batch export. They keep machine-friendly field names and bounded chunk contracts for downstream tools such as `bb-xhs-export`.
 - `xiaohongshu/notes-chunk` is the preferred bounded batch path for note exporters: it opens a small set of selected notes sequentially in one call, returns note details plus per-note failures, and stays stateless so checkpoints stay simple.
 - `xiaohongshu/comments-chunk` is the preferred high-throughput path for comment exporters: it advances multiple top-level comment pages and reply pages in one bounded call, and returns resumable session state.
+- `xiaohongshu/comments-first-page` is the lightweight probe path for comment exporters: it reads the first page, returns normalized comments plus a reply-thread queue preview, and lets downstream tools decide whether to finish inline or switch to resumable chunk/tail collection.
+- `xiaohongshu/comment-thread-page` is the narrow tail-sweep primitive: it advances one root-comment reply thread at a time, which is useful when only a few deep reply chains remain and the exporter wants finer control than a full `comments-chunk` pass.
 
 Typical validation flow:
 
@@ -199,6 +203,8 @@ bb-browser site xiaohongshu/search-page "穿搭" --sort likes --page 2
 bb-browser site xiaohongshu/note-detail 6932814d000000001e034e67
 bb-browser site xiaohongshu/notes-chunk --items_json '[{"note_id":"6932814d000000001e034e67","xsec_token":"<token>"}]' --max_items 2
 bb-browser site xiaohongshu/comments-chunk 6932814d000000001e034e67 --max_requests 12 --max_top_pages 2 --max_reply_pages 10
+bb-browser site xiaohongshu/comments-first-page 6932814d000000001e034e67 --top_limit 20
+bb-browser site xiaohongshu/comment-thread-page 6932814d000000001e034e67 --root_comment_id 67e52bd8000000001e03fa5f --reply_page_index 2 --reply_limit 10
 ```
 
 ## Writing a Site Adapter
