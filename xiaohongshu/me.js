@@ -271,6 +271,15 @@ async function(args) {
   const networkUser = helper.normalizeUser(captured?.data ?? captured);
   if (networkUser) return networkUser;
 
+  if (helper.fetchHtml && helper.parseInitialState) {
+    try {
+      const html = await helper.fetchHtml("https://www.xiaohongshu.com/explore");
+      const state = helper.parseInitialState(html);
+      const ssrUser = helper.normalizeUser(state?.user?.userInfo) || helper.normalizeUser(state?.user?.userPageData?.basicInfo);
+      if (ssrUser) return ssrUser;
+    } catch {}
+  }
+
   return {
     error: captured?.msg || "Failed to get user info",
     hint: userStore.loggedIn

@@ -245,6 +245,19 @@ async function(args) {
     feeds = helper.toPlain(feedStore.feeds || []);
   }
 
+  let hasMore = Boolean(feedStore?.query?.cursorScore ?? feedStore?.query?.cursor_score ?? 0);
+  if ((!Array.isArray(feeds) || feeds.length === 0) && helper.fetchHtml && helper.parseInitialState) {
+    try {
+      const html = await helper.fetchHtml("https://www.xiaohongshu.com/explore");
+      const state = helper.parseInitialState(html);
+      const ssrFeeds = helper.toPlain(state?.feed?.feeds || []);
+      if (Array.isArray(ssrFeeds) && ssrFeeds.length > 0) {
+        feeds = ssrFeeds;
+        hasMore = Boolean(state?.feed?.query?.cursorScore ?? state?.feed?.query?.cursor_score ?? ssrFeeds.length);
+      }
+    } catch {}
+  }
+
   const notes = (Array.isArray(feeds) ? feeds : [])
     .map(helper.mapNoteCardItem)
     .filter(Boolean);
@@ -258,6 +271,5 @@ async function(args) {
     };
   }
 
-  const hasMore = Boolean(feedStore?.query?.cursorScore ?? feedStore?.query?.cursor_score ?? notes.length);
   return { count: notes.length, has_more: hasMore, notes };
 }

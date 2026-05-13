@@ -15,6 +15,20 @@
 async function(args) {
   if (!args.note_id) return { error: "Missing argument: note_id" };
 
+  function mapCommentList(commentsState) {
+    return Array.isArray(commentsState?.list)
+      ? commentsState.list.map((comment) => ({
+          id: comment?.id ?? null,
+          author: comment?.userInfo?.nickname ?? comment?.user_info?.nickname ?? null,
+          author_id: comment?.userInfo?.userId ?? comment?.userInfo?.user_id ?? comment?.user_info?.user_id ?? null,
+          content: comment?.content ?? null,
+          likes: comment?.likeCount ?? comment?.like_count ?? null,
+          sub_comment_count: comment?.subCommentCount ?? comment?.sub_comment_count ?? null,
+          created_time: comment?.createTime ?? comment?.create_time ?? null
+        }))
+      : [];
+  }
+
   const helper = globalThis.__bbBrowserXhsHelper?.rememberNoteTokens
     ? globalThis.__bbBrowserXhsHelper
     : (globalThis.__bbBrowserXhsHelper = (() => {
@@ -245,6 +259,24 @@ async function(args) {
   try {
     detail = await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, true);
   } catch (error) {
+    try {
+      const html = resolved.url ? await helper.fetchHtml(resolved.url) : null;
+      const state = html ? helper.parseInitialState(html) : null;
+      const ssrDetail = state?.note?.noteDetailMap?.[resolved.noteId];
+      const ssrComments = ssrDetail?.comments;
+      const ssrList = mapCommentList(ssrComments);
+
+      if (ssrList.length > 0 || ssrComments?.firstRequestFinish) {
+        return {
+          note_id: resolved.noteId,
+          count: ssrList.length,
+          has_more: ssrComments?.hasMore ?? ssrComments?.has_more ?? false,
+          cursor: ssrComments?.cursor ?? null,
+          comments: ssrList
+        };
+      }
+    } catch {}
+
     return {
       error: error?.message || "Comments fetch failed",
       hint: "The note may be unavailable, deleted, or restricted"
@@ -253,17 +285,7 @@ async function(args) {
 
   const commentsState = detail?.comments || {};
   helper.rememberNoteTokens([{ id: resolved.noteId, xsecToken: resolved.xsecToken, noteCard: { noteId: resolved.noteId } }]);
-  const comments = Array.isArray(commentsState.list)
-    ? commentsState.list.map((comment) => ({
-        id: comment?.id ?? null,
-        author: comment?.userInfo?.nickname ?? comment?.user_info?.nickname ?? null,
-        author_id: comment?.userInfo?.userId ?? comment?.userInfo?.user_id ?? comment?.user_info?.user_id ?? null,
-        content: comment?.content ?? null,
-        likes: comment?.likeCount ?? comment?.like_count ?? null,
-        sub_comment_count: comment?.subCommentCount ?? comment?.sub_comment_count ?? null,
-        created_time: comment?.createTime ?? comment?.create_time ?? null
-      }))
-      : [];
+  const comments = mapCommentList(commentsState);
 
   return {
     note_id: resolved.noteId,

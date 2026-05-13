@@ -245,10 +245,22 @@ async function(args) {
   try {
     detail = await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, false);
   } catch (error) {
-    return {
-      error: error?.message || "Note fetch failed",
-      hint: "The note may be unavailable, deleted, or restricted"
-    };
+    try {
+      const html = resolved.url ? await helper.fetchHtml(resolved.url) : null;
+      const state = html ? helper.parseInitialState(html) : null;
+      const ssrNote = state?.note?.noteDetailMap?.[resolved.noteId]?.note;
+
+      if (ssrNote) {
+        detail = { note: ssrNote };
+      } else {
+        throw error;
+      }
+    } catch {
+      return {
+        error: error?.message || "Note fetch failed",
+        hint: "The note may be unavailable, deleted, or restricted"
+      };
+    }
   }
 
   const note = detail?.note;

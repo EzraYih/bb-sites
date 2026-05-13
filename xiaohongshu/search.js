@@ -5,7 +5,11 @@
   "domain": "www.xiaohongshu.com",
   "args": {
     "keyword": {"required": true, "description": "Search keyword"},
-    "sort": {"required": false, "description": "Sort: general (default), latest, likes, comments, collects"}
+    "sort": {"required": false, "description": "Sort: general (default), latest, likes, comments, collects"},
+    "resume_mode": {"required": false, "description": "Resume mode: start, warm, cold, auto"},
+    "search_session_id": {"required": false, "description": "Previous search session id"},
+    "expected_frontier_note_ids": {"required": false, "description": "Expected frontier note ids for cold catch-up"},
+    "time_budget_ms": {"required": false, "description": "Time budget for this call in milliseconds"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -14,7 +18,11 @@
 */
 
 async function(args) {
+  const startedAt = Date.now();
   if (!args.keyword) return { error: "Missing argument: keyword" };
+  const timeBudgetMs = Math.max(0, Number(args.time_budget_ms ?? 0) || 0);
+  const jitterMinMs = Math.max(0, Number(args.load_more_jitter_min_ms ?? 0) || 0);
+  const jitterMaxMs = Math.max(jitterMinMs, Number(args.load_more_jitter_max_ms ?? jitterMinMs) || jitterMinMs);
 
   const sortAliases = {
     general: "general",
@@ -60,6 +68,11 @@ async function(args) {
   const requestedSortInput = String(args.sort ?? "general").trim();
   const requestedSortKey = requestedSortInput.toLowerCase();
   const requestedSort = sortAliases[requestedSortKey] || sortAliases[requestedSortInput] || null;
+  const requestedResumeMode = String(args.resume_mode ?? "start").trim().toLowerCase();
+  const resumeModeUsed = requestedResumeMode === "auto" ? "start" : requestedResumeMode;
+  const searchSessionId = typeof args.search_session_id === "string" && args.search_session_id.trim()
+    ? args.search_session_id.trim()
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
   if (!requestedSort) {
     return {
       error: `Invalid sort: ${requestedSortInput}`,
@@ -104,6 +117,10 @@ async function(args) {
   }
 
   const helper = globalThis.__bbBrowserXhsHelper?.rememberNoteTokens
+    && (
+      globalThis.__bbBrowserXhsHelper?.__bbSearchAdapterVersion === 2
+      || typeof document === "undefined"
+    )
     ? globalThis.__bbBrowserXhsHelper
     : (globalThis.__bbBrowserXhsHelper = (() => {
     function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -165,6 +182,8 @@ async function(args) {
         author: user.nickname ?? user.nickName ?? null,
         author_id: user.userId ?? user.user_id ?? null,
         likes: card.interactInfo?.likedCount ?? card.interact_info?.liked_count ?? null,
+        comments: card.interactInfo?.commentCount ?? card.interact_info?.comment_count ?? null,
+        collects: card.interactInfo?.collectedCount ?? card.interact_info?.collected_count ?? null,
         time: card.lastUpdateTime ?? card.last_update_time ?? card.time ?? null
       };
     }
@@ -176,6 +195,15 @@ async function(args) {
         else if (group) result.push(group);
       }
       return result;
+    }
+    function buildMappedNoteIndex(items) {
+      const index = new Map();
+      if (!Array.isArray(items)) return index;
+      for (const item of items) {
+        const mapped = mapNoteCardItem(item);
+        if (mapped?.note_id) index.set(mapped.note_id, mapped);
+      }
+      return index;
     }
     function parseInitialState(html) {
       const match = html.match(/__INITIAL_STATE__=(\{[\s\S]*?\})<\/script>/);
@@ -289,6 +317,7 @@ async function(args) {
       return detail;
     }
     return {
+      __bbSearchAdapterVersion: 2,
       sleep,
       getPinia,
       getRouter,
@@ -336,6 +365,10 @@ async function(args) {
   };
 
   const searchKeyword = args.keyword;
+  function pickJitterSleepMs() {
+    if (jitterMaxMs <= jitterMinMs) return jitterMinMs;
+    return Math.floor(Math.random() * (jitterMaxMs - jitterMinMs + 1)) + jitterMinMs;
+  }
 
   XMLHttpRequest.prototype.send = function(body) {
     if (String(this.__bbUrl || "").includes("search/notes")) {
@@ -371,23 +404,30 @@ async function(args) {
     if (!router) {
       return { error: "Router not found", hint: "Refresh the page and retry" };
     }
+    const canWarmResume = resumeModeUsed === "warm"
+      && searchSessionId
+      && searchStore.__bbSearchSessionId === searchSessionId
+      && router.currentRoute?.value?.path === "/search_result"
+      && typeof searchStore.loadMore === "function";
 
-    router.push({
-      path: "/search_result",
-      query: { keyword: args.keyword, source: "web_search_result_notes" }
-    }).catch(() => {});
+    if (!canWarmResume) {
+      router.push({
+        path: "/search_result",
+        query: { keyword: args.keyword, source: "web_search_result_notes" }
+      }).catch(() => {});
 
-    const routeReady = await helper.waitFor(() => {
-      const route = router.currentRoute?.value;
-      if (!route) return null;
-      return route.path === "/search_result" ? route : null;
-    }, 10000, 250);
+      const routeReady = await helper.waitFor(() => {
+        const route = router.currentRoute?.value;
+        if (!route) return null;
+        return route.path === "/search_result" ? route : null;
+      }, 10000, 250);
 
-    if (!routeReady) {
-      return { error: "Search page did not load", hint: "Retry from an open Xiaohongshu tab" };
+      if (!routeReady) {
+        return { error: "Search page did not load", hint: "Retry from an open Xiaohongshu tab" };
+      }
+
+      await helper.sleep(1200);
     }
-
-    await helper.sleep(1200);
 
     availableFilters = await helper.waitFor(() => {
       const filters = helper.toPlain(searchStore.filters || []);
@@ -397,51 +437,115 @@ async function(args) {
     appliedFilterParams = buildSearchFilters(availableFilters, requestedSort);
     const activeFilters = buildActiveFilters(availableFilters, appliedFilterParams);
 
-    searchStore.mutateSearchValue?.(args.keyword);
-    if (searchStore.searchContext) {
-      searchStore.searchContext.keyword = args.keyword;
-      searchStore.searchContext.page = 1;
-      searchStore.searchContext.pageSize = searchStore.searchContext.pageSize || 20;
-      searchStore.searchContext.searchId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-      searchStore.searchContext.sort = requestedSort;
-      searchStore.searchContext.noteType = searchStore.searchContext.noteType ?? 0;
-      searchStore.searchContext.extFlags = Array.isArray(searchStore.searchContext.extFlags) ? searchStore.searchContext.extFlags : [];
-      searchStore.searchContext.filters = appliedFilterParams;
-      searchStore.searchContext.geo = searchStore.searchContext.geo || "";
-      searchStore.searchContext.imageFormats = Array.isArray(searchStore.searchContext.imageFormats) && searchStore.searchContext.imageFormats.length
-        ? searchStore.searchContext.imageFormats
-        : ["jpg", "webp", "avif"];
+    if (!canWarmResume) {
+      searchStore.mutateSearchValue?.(args.keyword);
+      if (searchStore.searchContext) {
+        searchStore.searchContext.keyword = args.keyword;
+        searchStore.searchContext.page = 1;
+        searchStore.searchContext.pageSize = searchStore.searchContext.pageSize || 20;
+        searchStore.searchContext.searchId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        searchStore.searchContext.sort = requestedSort;
+        searchStore.searchContext.noteType = searchStore.searchContext.noteType ?? 0;
+        searchStore.searchContext.extFlags = Array.isArray(searchStore.searchContext.extFlags) ? searchStore.searchContext.extFlags : [];
+        searchStore.searchContext.filters = appliedFilterParams;
+        searchStore.searchContext.geo = searchStore.searchContext.geo || "";
+        searchStore.searchContext.imageFormats = Array.isArray(searchStore.searchContext.imageFormats) && searchStore.searchContext.imageFormats.length
+          ? searchStore.searchContext.imageFormats
+          : ["jpg", "webp", "avif"];
+      }
+      searchStore.filterParams = appliedFilterParams;
+      searchStore.activeFilters = activeFilters;
     }
-    searchStore.filterParams = appliedFilterParams;
-    searchStore.activeFilters = activeFilters;
 
-    searchStore.resetSearchNoteStore?.();
-    if (searchStore.feeds) searchStore.feeds = [];
-    captured = null;
-    try {
-      if (searchStore.searchNotes) {
+    let requestCount = 0;
+    let jitterSleeps = 0;
+    let jitterSleepMs = 0;
+    const roundDurations = [];
+
+    async function waitForStoreToSettle(previousFeedsLength, previousPage) {
+      await helper.waitFor(() => {
+        const currentFeedsLength = Array.isArray(searchStore.feeds) ? searchStore.feeds.length : 0;
+        const currentPage = searchStore.searchContext?.page ?? null;
+        const currentState = searchStore.state ?? null;
+        const domExploreLinkCount = typeof document !== "undefined"
+          ? document.querySelectorAll('a[href*="/explore/"]').length
+          : 0;
+
+        if (currentState && currentState !== "loading") return true;
+        if (currentFeedsLength > previousFeedsLength) return true;
+        if (currentPage !== null && previousPage !== null && currentPage > previousPage) return true;
+        if (domExploreLinkCount > 0) return true;
+        return null;
+      }, 3000, 150);
+    }
+
+    async function runRound(fn) {
+      const roundStartedAt = Date.now();
+      const previousFeedsLength = Array.isArray(searchStore.feeds) ? searchStore.feeds.length : 0;
+      const previousPage = searchStore.searchContext?.page ?? null;
+      captured = null;
+      try {
+        fn?.();
+      } catch {}
+      await helper.waitFor(() => captured, 12000, 200);
+      await waitForStoreToSettle(previousFeedsLength, previousPage);
+      roundDurations.push(Date.now() - roundStartedAt);
+      requestCount += 1;
+    }
+
+    await runRound(() => {
+      if (canWarmResume && searchStore.loadMore) {
+        searchStore.loadMore();
+      } else if (searchStore.searchNotes) {
+        searchStore.resetSearchNoteStore?.();
+        if (searchStore.feeds) searchStore.feeds = [];
         searchStore.searchNotes();
       } else if (searchStore.loadMore) {
         searchStore.loadMore();
       }
-    } catch {}
+    });
 
-    await helper.waitFor(() => captured, 12000, 200);
-    await helper.sleep(300);
+    searchStore.__bbRequestCount = requestCount;
+    searchStore.__bbJitterSleeps = jitterSleeps;
+    searchStore.__bbJitterSleepMs = jitterSleepMs;
+    searchStore.__bbRoundDurations = roundDurations;
+    searchStore.__bbSearchSessionId = searchSessionId;
   } finally {
     XMLHttpRequest.prototype.open = origOpen;
     XMLHttpRequest.prototype.send = origSend;
     globalThis.fetch = origFetch;
   }
 
-  const rawItems = Array.isArray(captured?.data?.items)
-    ? captured.data.items
-    : helper.toPlain(searchStore.feeds || []);
+  const accumulatedFeeds = helper.toPlain(searchStore.feeds || []);
+  const rawItems = Array.isArray(accumulatedFeeds) && accumulatedFeeds.length > 0
+    ? accumulatedFeeds
+    : Array.isArray(captured?.data?.items)
+      ? captured.data.items
+      : [];
 
   helper.rememberNoteTokens(rawItems);
+  const capturedItemIndex = (() => {
+    const index = new Map();
+    const capturedItems = Array.isArray(captured?.data?.items) ? captured.data.items : [];
+    for (const item of capturedItems) {
+      const mapped = helper.mapNoteCardItem(item);
+      if (mapped?.note_id) index.set(mapped.note_id, mapped);
+    }
+    return index;
+  })();
 
   const notes = (Array.isArray(rawItems) ? rawItems : [])
-    .map(helper.mapNoteCardItem)
+    .map((item) => {
+      const mapped = helper.mapNoteCardItem(item);
+      if (!mapped?.note_id) return null;
+      const enriched = capturedItemIndex.get(mapped.note_id);
+      if (!enriched) return mapped;
+      return {
+        ...mapped,
+        comments: mapped.comments ?? enriched.comments ?? null,
+        collects: mapped.collects ?? enriched.collects ?? null
+      };
+    })
     .filter((note) => note && /^[a-f0-9]+$/i.test(String(note.note_id)));
 
   if (captured && captured.success === false) {
@@ -451,12 +555,36 @@ async function(args) {
     };
   }
 
+  const requestCount = searchStore.__bbRequestCount ?? 1;
+  const jitterSleeps = searchStore.__bbJitterSleeps ?? 0;
+  const jitterSleepMs = searchStore.__bbJitterSleepMs ?? 0;
+  const roundDurations = Array.isArray(searchStore.__bbRoundDurations) ? searchStore.__bbRoundDurations : [Date.now() - startedAt];
+  const hasMore = captured?.data?.has_more ?? searchStore?.hasMore ?? false;
+  const stopReason = notes.length === 0
+    ? "search_failed"
+    : !hasMore
+      ? "has_more_false"
+      : timeBudgetMs > 0 && Date.now() - startedAt >= timeBudgetMs
+        ? "time_budget_reached"
+        : "max_rounds_reached";
+
   return {
     keyword: args.keyword,
     sort: requestedSort,
     sort_label: resolveSortLabel(availableFilters, requestedSort),
+    resume_mode_used: resumeModeUsed,
+    search_session_id: searchSessionId,
     count: notes.length,
-    has_more: captured?.data?.has_more ?? searchStore?.hasMore ?? false,
+    added_count: notes.length,
+    total_unique_count: notes.length,
+    has_more: hasMore,
+    stop_reason: stopReason,
+    request_count: requestCount,
+    jitter_sleeps: jitterSleeps,
+    jitter_sleep_ms: jitterSleepMs,
+    round_durations_ms: roundDurations,
+    frontier_note_ids: notes.slice(-5).map((note) => note.note_id),
+    frontier_matched: null,
     notes
   };
 }
