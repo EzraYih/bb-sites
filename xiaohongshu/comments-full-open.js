@@ -1,26 +1,58 @@
 /* @meta
 {
-  "name": "xiaohongshu/note",
-  "description": "Get Xiaohongshu note details",
+  "name": "xiaohongshu/comments-full-open",
+  "description": "Open a Xiaohongshu note full comment session",
   "domain": "www.xiaohongshu.com",
   "args": {
     "note_id": {"required": true, "description": "Note ID or full note URL"},
-    "ssr_fallback": {"required": false, "description": "Whether to use SSR HTML fallback when runtime store does not load"},
-    "ssr_timeout_ms": {"required": false, "description": "SSR fallback timeout in milliseconds"}
+    "page_size": {"required": false, "description": "Requested page size"}
   },
   "capabilities": ["network"],
-  "readOnly": true,
-  "example": "bb-browser site xiaohongshu/note 69aa7160000000001b01634d"
+  "readOnly": true
 }
 */
 
 async function(args) {
   if (!args.note_id) return { error: "Missing argument: note_id" };
 
-  const existingHelper = globalThis.__bbBrowserXhsHelper;
-  const helper = existingHelper?.__noteDiagnosticsVersion === 1
-    || (existingHelper?.rememberNoteTokens && typeof document === "undefined")
-    ? existingHelper
+  function mapCommentList(commentsState) {
+    return Array.isArray(commentsState?.list)
+      ? commentsState.list.map((comment) => ({
+          id: comment?.id ?? null,
+          author: comment?.userInfo?.nickname ?? comment?.user_info?.nickname ?? null,
+          author_id: comment?.userInfo?.userId ?? comment?.userInfo?.user_id ?? comment?.user_info?.user_id ?? null,
+          content: comment?.content ?? null,
+          likes: comment?.likeCount ?? comment?.like_count ?? null,
+          sub_comment_count: comment?.subCommentCount ?? comment?.sub_comment_count ?? null,
+          created_time: comment?.createTime ?? comment?.create_time ?? null
+        }))
+      : [];
+  }
+
+  function ensureCommentSessionCache() {
+    if (!globalThis.__bbBrowserXhsCommentSessions) {
+      globalThis.__bbBrowserXhsCommentSessions = {};
+    }
+    return globalThis.__bbBrowserXhsCommentSessions;
+  }
+
+  function createCommentSession(payload) {
+    const id = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `comment-session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    ensureCommentSessionCache()[id] = payload;
+    return id;
+  }
+
+  function plain(value) {
+    if (typeof globalThis.__bbBrowserXhsHelper?.toPlain === "function") {
+      return globalThis.__bbBrowserXhsHelper.toPlain(value);
+    }
+    try { return JSON.parse(JSON.stringify(value)); } catch { return value ?? null; }
+  }
+
+  const helper = globalThis.__bbBrowserXhsHelper?.rememberNoteTokens
+    ? globalThis.__bbBrowserXhsHelper
     : (globalThis.__bbBrowserXhsHelper = (() => {
     function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
     function getApp() { return document.querySelector("#app")?.__vue_app__ || null; }
@@ -46,22 +78,11 @@ async function(args) {
         sleep(timeoutMs).then(() => { throw new Error(message); })
       ]);
     }
-    function normalizeUser(user) {
-      if (!user || typeof user !== "object") return null;
-      const nickname = user.nickname ?? user.name ?? user.nickName ?? null;
-      const userId = user.userId ?? user.user_id ?? user.userid ?? user.id ?? null;
-      const redId = user.redId ?? user.red_id ?? user.redid ?? null;
-      const desc = user.desc ?? user.description ?? null;
-      const gender = user.gender ?? null;
-      if (!nickname && !userId && !redId) return null;
-      return {
-        nickname,
-        red_id: redId,
-        desc,
-        gender,
-        userid: userId,
-        url: userId ? `https://www.xiaohongshu.com/user/profile/${userId}` : null
-      };
+    function hasCommentLoader(noteStore) {
+      return typeof noteStore?.getCommentListByNoteId === "function"
+        || typeof noteStore?.getCommentsByNoteId === "function"
+        || typeof noteStore?.fetchCommentList === "function"
+        || typeof noteStore?.fetchCommentsByNoteId === "function";
     }
     function mapNoteCardItem(item) {
       const card = item?.noteCard || item?.note_card || item;
@@ -127,16 +148,6 @@ async function(args) {
     function buildNoteUrl(noteId, xsecToken) {
       return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=`;
     }
-    function getNoteStoreSnapshot(noteId) {
-      const noteStore = getStore("note");
-      const detailMap = noteStore?.noteDetailMap || {};
-      return {
-        state: noteStore?.state ?? null,
-        currentNoteId: noteStore?.currentNoteId ?? noteStore?.currentNote?.noteId ?? null,
-        hasTargetDetail: Boolean(noteId && detailMap?.[noteId]?.note?.noteId === noteId),
-        detailMapSize: detailMap && typeof detailMap === "object" ? Object.keys(detailMap).length : 0
-      };
-    }
     function getTokenCache() {
       if (!globalThis.__bbBrowserXhsTokenCache) globalThis.__bbBrowserXhsTokenCache = {};
       return globalThis.__bbBrowserXhsTokenCache;
@@ -191,121 +202,83 @@ async function(args) {
       const router = getRouter();
       if (!router) throw new Error("Router not found");
       router.push({ path, query }).catch(() => {});
-      const targetPath = String(path ?? "");
-      await waitFor(() => {
-        const route = router.currentRoute?.value;
-        if (!route) return null;
-        const currentPath = typeof route.path === "string" ? route.path : "";
-        const currentFullPath = typeof route.fullPath === "string" ? route.fullPath : "";
-        return currentPath === targetPath
-          || currentPath.startsWith(`${targetPath}?`)
-          || currentFullPath === targetPath
-          || currentFullPath.startsWith(`${targetPath}?`)
-          ? route
-          : null;
-      }, Math.min(waitMs, 150), 50);
+      await sleep(waitMs);
       return router.currentRoute?.value || null;
     }
-    async function openNoteAndWait(noteId, xsecToken, requireComments = false, diagnostics = null) {
+    async function openNoteAndWait(noteId, xsecToken, requireComments = false) {
       if (!noteId || !xsecToken) throw new Error("Missing note id or xsec token");
       const noteStore = getStore("note");
+      const router = getRouter();
       if (!noteStore) throw new Error("Note store not found");
-      const cachedDetail = noteStore.noteDetailMap?.[noteId];
-      if (cachedDetail?.note?.noteId === noteId) {
-        if (diagnostics) diagnostics.source = "cache";
-        if (!requireComments) return toPlain(cachedDetail);
-        const cachedComments = cachedDetail.comments?.list;
-        if (Array.isArray(cachedComments) && (cachedComments.length > 0 || cachedDetail.comments?.firstRequestFinish)) {
-          return toPlain(cachedDetail);
-        }
-      }
-      const routeStartedAt = Date.now();
+      const targetRoutePath = `/explore/${noteId}`;
       await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
-      if (diagnostics) diagnostics.routeWaitMs += Date.now() - routeStartedAt;
+      if (!router) throw new Error("Router not found");
+      const routeReady = await waitFor(() => {
+        const route = router.currentRoute?.value;
+        if (!route) return null;
+        const path = typeof route.path === "string" ? route.path : "";
+        const fullPath = typeof route.fullPath === "string" ? route.fullPath : "";
+        return path === targetRoutePath
+          || path.startsWith(`${targetRoutePath}?`)
+          || fullPath === targetRoutePath
+          || fullPath.startsWith(`${targetRoutePath}?`)
+          ? route
+          : null;
+      }, 10000, 250);
+      if (!routeReady) throw new Error("Note route did not load");
       if (noteStore.setCurrentNoteId) noteStore.setCurrentNoteId(noteId);
       if (noteStore.getNoteDetailByNoteId) {
         try {
-          Promise.resolve(noteStore.getNoteDetailByNoteId(noteId)).catch(() => {});
+          await withTimeout(noteStore.getNoteDetailByNoteId(noteId), 6000, "Note detail load timed out");
         } catch {}
       }
-      const storeStartedAt = Date.now();
+      if (requireComments) {
+        const loadComments = noteStore.getCommentListByNoteId
+          || noteStore.getCommentsByNoteId
+          || noteStore.fetchCommentList
+          || noteStore.fetchCommentsByNoteId;
+        if (typeof loadComments === "function") {
+          try {
+            await withTimeout(Promise.resolve(loadComments.call(noteStore, noteId)), 6000, "Note comments load timed out");
+          } catch {}
+        }
+      }
       const detail = await waitFor(() => {
         const current = noteStore.noteDetailMap?.[noteId];
         if (!current?.note || current.note.noteId !== noteId) return null;
         if (!requireComments) return toPlain(current);
         const list = current.comments?.list;
+        const loading = current.comments?.loading;
+        const firstRequestFinish = current.comments?.firstRequestFinish;
         if (Array.isArray(list) && (list.length > 0 || current.comments?.firstRequestFinish)) return toPlain(current);
+        if (Array.isArray(list) && list.length === 0 && loading === false && firstRequestFinish === false && !hasCommentLoader(noteStore)) {
+          return { __bbBrowserAbortReason: "Note comments not loaded" };
+        }
         return null;
       }, requireComments ? 12000 : 8000, 250);
-      if (diagnostics) diagnostics.storeWaitMs += Date.now() - storeStartedAt;
+      if (detail?.__bbBrowserAbortReason) throw new Error(detail.__bbBrowserAbortReason);
       if (!detail) throw new Error(requireComments ? "Note comments not loaded" : "Note detail not loaded");
-      if (diagnostics) diagnostics.source = "store";
       return detail;
     }
     return {
-      __noteDiagnosticsVersion: 1,
       sleep,
       getPinia,
-      getRouter,
       getStore,
       toPlain,
       waitFor,
       withTimeout,
-      normalizeUser,
-      mapNoteCardItem,
-      flattenNoteGroups,
       parseInitialState,
       fetchHtml,
-      parseNoteInput,
-      buildNoteUrl,
-      getNoteStoreSnapshot,
       rememberNoteTokens,
       resolveNoteIdentity,
       openNoteAndWait
     };
   })());
 
-  const startedAt = Date.now();
-  const ssrFallback = String(args.ssr_fallback ?? "true").trim().toLowerCase() !== "false";
-  const ssrTimeoutMs = Math.max(1, Number(args.ssr_timeout_ms ?? 5000) || 5000);
-  const diagnostics = {
-    source: null,
-    routeWaitMs: 0,
-    storeWaitMs: 0,
-    ssrFetchMs: 0,
-    totalElapsedMs: 0,
-    storeStateBefore: null,
-    storeStateAfter: null
-  };
-  function snapshotStore(noteId) {
-    if (helper.getNoteStoreSnapshot) return helper.getNoteStoreSnapshot(noteId);
-    const noteStore = helper.getStore?.("note");
-    const detailMap = noteStore?.noteDetailMap || {};
-    return {
-      state: noteStore?.state ?? null,
-      currentNoteId: noteStore?.currentNoteId ?? null,
-      hasTargetDetail: Boolean(noteId && detailMap?.[noteId]?.note?.noteId === noteId),
-      detailMapSize: detailMap && typeof detailMap === "object" ? Object.keys(detailMap).length : 0
-    };
-  }
-  function finish(payload) {
-    diagnostics.routeDegraded = diagnostics.routeWaitMs >= 3000;
-    diagnostics.totalElapsedMs = Date.now() - startedAt;
-    return { ...payload, _diagnostics: diagnostics };
-  }
-  function withLocalTimeout(promise, timeoutMs, message) {
-    return Promise.race([
-      promise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs))
-    ]);
-  }
-
-  const pinia = helper.getPinia();
-  const userStore = helper.getStore("user");
-  if (!userStore?.loggedIn) return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore — then log in manually" };
-  if (!pinia?._s) {
-    return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded" };
-  }
+  const pinia = helper.getPinia?.();
+  const userStore = helper.getStore?.("user");
+  if (!userStore?.loggedIn) return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore then log in manually" };
+  if (!pinia?._s) return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded" };
 
   const resolved = helper.resolveNoteIdentity(args.note_id);
   if (!resolved.noteId) {
@@ -318,75 +291,94 @@ async function(args) {
     };
   }
 
+  const noteStore = helper.getStore("note");
+  const loadComments = noteStore?.getCommentListByNoteId
+    || noteStore?.getCommentsByNoteId
+    || noteStore?.fetchCommentList
+    || noteStore?.fetchCommentsByNoteId;
+
   let detail;
   try {
-    diagnostics.storeStateBefore = snapshotStore(resolved.noteId);
-    const cachedDetail = helper.getStore("note")?.noteDetailMap?.[resolved.noteId];
-    if (cachedDetail?.note?.noteId === resolved.noteId) {
-      diagnostics.source = "cache";
-      detail = helper.toPlain ? helper.toPlain(cachedDetail) : cachedDetail;
-    } else {
-      detail = await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, false, diagnostics);
-    }
-    diagnostics.storeStateAfter = snapshotStore(resolved.noteId);
+    detail = await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, true);
   } catch (error) {
-    diagnostics.storeStateAfter = snapshotStore(resolved.noteId);
-    if (!ssrFallback) {
-      diagnostics.source = "store_timeout";
-      return finish({
-        error: error?.message || "Note fetch failed",
-        hint: "Runtime note detail did not load before SSR fallback was disabled"
-      });
-    }
-    try {
-      const ssrStartedAt = Date.now();
-      const html = resolved.url
-        ? await withLocalTimeout(Promise.resolve(helper.fetchHtml(resolved.url)), ssrTimeoutMs, "SSR fallback timed out")
-        : null;
-      diagnostics.ssrFetchMs = Date.now() - ssrStartedAt;
-      const state = html ? helper.parseInitialState(html) : null;
-      const ssrNote = state?.note?.noteDetailMap?.[resolved.noteId]?.note;
+    const firstErrorMessage = error?.message || String(error || "");
 
-      if (ssrNote) {
-        diagnostics.source = "ssr";
-        detail = { note: ssrNote };
-      } else {
-        throw error;
+    if (String(firstErrorMessage).toLowerCase().includes("note comments not loaded")) {
+      try {
+        await (helper.sleep ? helper.sleep(500) : new Promise((resolve) => setTimeout(resolve, 500)));
+        detail = await helper.openNoteAndWait(resolved.noteId, resolved.xsecToken, true);
+      } catch (retryError) {
+        error = retryError;
       }
-    } catch (ssrError) {
-      diagnostics.ssrFetchMs = diagnostics.ssrFetchMs || ssrTimeoutMs;
-      diagnostics.source = ssrError?.message === "SSR fallback timed out" ? "ssr_timeout" : "ssr_error";
-      return finish({
-        error: error?.message || "Note fetch failed",
+    }
+
+    if (!detail) {
+      try {
+        const html = resolved.url ? await helper.fetchHtml(resolved.url) : null;
+        const state = html ? helper.parseInitialState(html) : null;
+        const ssrDetail = state?.note?.noteDetailMap?.[resolved.noteId];
+        if (ssrDetail?.comments) {
+          detail = { comments: ssrDetail.comments };
+        }
+      } catch {}
+    }
+
+    if (!detail) {
+      return {
+        error: error?.message || "Comments fetch failed",
         hint: "The note may be unavailable, deleted, or restricted"
-      });
+      };
     }
   }
 
-  const note = detail?.note;
-  if (!note) return { error: "Note detail unavailable" };
+  const commentsState = plain(detail?.comments || {});
+  const comments = mapCommentList(commentsState);
+  helper.rememberNoteTokens([{ id: resolved.noteId, xsecToken: resolved.xsecToken, noteCard: { noteId: resolved.noteId } }]);
 
-  const token = note.xsecToken ?? resolved.xsecToken;
-  helper.rememberNoteTokens([{ id: resolved.noteId, xsecToken: token, noteCard: { noteId: resolved.noteId } }]);
-  return finish({
+  const sessionPayload = {
+    noteId: resolved.noteId,
+    mode: "full",
+    resolved,
+    loadNext: null,
+    commentsState,
+    cursor: commentsState?.cursor ?? null,
+    hasMore: commentsState?.hasMore ?? commentsState?.has_more ?? false,
+    loadedCount: comments.length
+  };
+  const sessionId = createCommentSession(sessionPayload);
+
+  sessionPayload.loadNext = typeof loadComments === "function"
+    ? async () => {
+        const session = ensureCommentSessionCache()[sessionId];
+        const previousCount = session?.loadedCount ?? 0;
+        const previousCursor = session?.cursor ?? null;
+        try {
+          await helper.withTimeout(Promise.resolve(loadComments.call(noteStore, resolved.noteId)), 6000, "Note comments load timed out");
+        } catch {}
+        const nextDetail = await helper.waitFor(() => {
+          const current = noteStore?.noteDetailMap?.[resolved.noteId];
+          const nextState = current?.comments;
+          if (!nextState) return null;
+          const nextCursor = nextState.cursor ?? null;
+          const nextHasMore = nextState.hasMore ?? nextState.has_more ?? false;
+          const nextList = Array.isArray(nextState.list) ? nextState.list : [];
+          if (nextList.length > previousCount || nextCursor !== previousCursor || nextHasMore === false) {
+            return plain(current);
+          }
+          return null;
+        }, 12000, 250);
+        return nextDetail ? plain(nextDetail) : { comments: plain(noteStore?.noteDetailMap?.[resolved.noteId]?.comments || {}) };
+      }
+    : null;
+
+  return {
     note_id: resolved.noteId,
-    xsec_token: token,
-    title: note.title ?? null,
-    desc: note.desc ?? null,
-    type: note.type ?? null,
-    url: token ? helper.buildNoteUrl(resolved.noteId, token) : `https://www.xiaohongshu.com/explore/${resolved.noteId}`,
-    author: note.user?.nickname ?? null,
-    author_id: note.user?.userId ?? note.user?.user_id ?? null,
-    likes: note.interactInfo?.likedCount ?? null,
-    comments: note.interactInfo?.commentCount ?? null,
-    collects: note.interactInfo?.collectedCount ?? null,
-    shares: note.interactInfo?.shareCount ?? null,
-    tags: Array.isArray(note.tagList) ? note.tagList.map((tag) => tag?.name).filter(Boolean) : [],
-    images: Array.isArray(note.imageList)
-      ? note.imageList.map((image) => image?.urlDefault ?? image?.urlPre ?? image?.url ?? image?.infoList?.[0]?.url).filter(Boolean)
-      : [],
-    created_time: note.time ?? null,
-    last_update_time: note.lastUpdateTime ?? null,
-    ip_location: note.ipLocation ?? null
-  });
+    mode: "full",
+    comment_session_id: sessionId,
+    count: comments.length,
+    loaded_count: comments.length,
+    has_more: sessionPayload.hasMore,
+    cursor: sessionPayload.cursor,
+    comments
+  };
 }
