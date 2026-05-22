@@ -18,7 +18,7 @@ async function(args) {
   if (!args.note_id) return { error: "Missing argument: note_id" };
 
   const existingHelper = globalThis.__bbBrowserXhsHelper;
-  const helper = existingHelper?.__noteDiagnosticsVersion === 1
+  const helper = existingHelper?.__noteDiagnosticsVersion === 2
     || (existingHelper?.rememberNoteTokens && typeof document === "undefined")
     ? existingHelper
     : (globalThis.__bbBrowserXhsHelper = (() => {
@@ -137,6 +137,44 @@ async function(args) {
         detailMapSize: detailMap && typeof detailMap === "object" ? Object.keys(detailMap).length : 0
       };
     }
+    function detectManualVerification() {
+      if (typeof document === "undefined") return null;
+      const url = String(location?.href || "");
+      if (/verify|captcha|risk|security|challenge/i.test(url)) {
+        return { reason: "url", text: url.slice(0, 500), url };
+      }
+      const selectors = [
+        "[role='dialog']",
+        ".modal",
+        ".captcha",
+        ".verify",
+        ".verification",
+        ".security",
+        "[class*='captcha' i]",
+        "[class*='verify' i]",
+        "[class*='security' i]"
+      ];
+      const textPattern = /安全验证|请完成验证|身份验证|验证码|拖动滑块|滑块验证|选择.*验证|继续访问|verify|verification|captcha|challenge/i;
+      const candidates = [];
+      for (const selector of selectors) {
+        try {
+          candidates.push(...document.querySelectorAll(selector));
+        } catch {}
+      }
+      candidates.push(document.body);
+      for (const element of candidates) {
+        const text = String(element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim();
+        if (text && textPattern.test(text)) {
+          return { reason: "dom", text: text.slice(0, 500), url };
+        }
+      }
+      return null;
+    }
+    function assertNoManualVerification() {
+      const detected = detectManualVerification();
+      if (!detected) return;
+      throw new Error(`XHS_MANUAL_VERIFICATION_REQUIRED: detail collection is blocked by a manual verification dialog; reason=${detected.reason}; text=${detected.text}`);
+    }
     function getTokenCache() {
       if (!globalThis.__bbBrowserXhsTokenCache) globalThis.__bbBrowserXhsTokenCache = {};
       return globalThis.__bbBrowserXhsTokenCache;
@@ -208,6 +246,7 @@ async function(args) {
     }
     async function openNoteAndWait(noteId, xsecToken, requireComments = false, diagnostics = null) {
       if (!noteId || !xsecToken) throw new Error("Missing note id or xsec token");
+      assertNoManualVerification();
       const noteStore = getStore("note");
       if (!noteStore) throw new Error("Note store not found");
       const cachedDetail = noteStore.noteDetailMap?.[noteId];
@@ -221,6 +260,7 @@ async function(args) {
       }
       const routeStartedAt = Date.now();
       await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
+      assertNoManualVerification();
       if (diagnostics) diagnostics.routeWaitMs += Date.now() - routeStartedAt;
       if (noteStore.setCurrentNoteId) noteStore.setCurrentNoteId(noteId);
       if (noteStore.getNoteDetailByNoteId) {
@@ -230,6 +270,7 @@ async function(args) {
       }
       const storeStartedAt = Date.now();
       const detail = await waitFor(() => {
+        assertNoManualVerification();
         const current = noteStore.noteDetailMap?.[noteId];
         if (!current?.note || current.note.noteId !== noteId) return null;
         if (!requireComments) return toPlain(current);
@@ -243,7 +284,7 @@ async function(args) {
       return detail;
     }
     return {
-      __noteDiagnosticsVersion: 1,
+      __noteDiagnosticsVersion: 2,
       sleep,
       getPinia,
       getRouter,
@@ -259,6 +300,8 @@ async function(args) {
       parseNoteInput,
       buildNoteUrl,
       getNoteStoreSnapshot,
+      detectManualVerification,
+      assertNoManualVerification,
       rememberNoteTokens,
       resolveNoteIdentity,
       openNoteAndWait
@@ -302,6 +345,7 @@ async function(args) {
 
   const pinia = helper.getPinia();
   const userStore = helper.getStore("user");
+  helper.assertNoManualVerification?.();
   if (!userStore?.loggedIn) return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore — then log in manually" };
   if (!pinia?._s) {
     return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded" };
@@ -321,6 +365,7 @@ async function(args) {
   let detail;
   try {
     diagnostics.storeStateBefore = snapshotStore(resolved.noteId);
+    helper.assertNoManualVerification?.();
     const cachedDetail = helper.getStore("note")?.noteDetailMap?.[resolved.noteId];
     if (cachedDetail?.note?.noteId === resolved.noteId) {
       diagnostics.source = "cache";
