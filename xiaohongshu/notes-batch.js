@@ -9,7 +9,9 @@
     "single_note_timeout_ms": {"required": false, "description": "Timeout for single note (default 8000)"},
     "max_failures": {"required": false, "description": "Max consecutive failures before abort (default 3)"},
     "min_delay_ms": {"required": false, "description": "Min delay between notes (default 600)"},
-    "max_delay_ms": {"required": false, "description": "Max delay between notes (default 1200)"}
+    "max_delay_ms": {"required": false, "description": "Max delay between notes (default 1200)"},
+    "external_min_delay_ms": {"required": false, "description": "External override for min delay (from cross-batch adaptive)"},
+    "external_max_delay_ms": {"required": false, "description": "External override for max delay (from cross-batch adaptive)"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -155,8 +157,8 @@ async function(args) {
   const timeBudgetMs = Number(args.time_budget_ms) || 60000;
   const singleNoteTimeoutMs = Number(args.single_note_timeout_ms) || 8000;
   const maxFailures = Number(args.max_failures) || 3;
-  const minDelayMs = Number(args.min_delay_ms) || 600;
-  const maxDelayMs = Number(args.max_delay_ms) || 1200;
+  const minDelayMs = Number(args.external_min_delay_ms) || Number(args.min_delay_ms) || 600;
+  const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
 
   const startTime = Date.now();
   const collected = [];
