@@ -11,7 +11,8 @@
     "min_delay_ms": {"required": false, "description": "Min delay between notes (default 600)"},
     "max_delay_ms": {"required": false, "description": "Max delay between notes (default 1200)"},
     "external_min_delay_ms": {"required": false, "description": "External override for min delay (from cross-batch adaptive)"},
-    "external_max_delay_ms": {"required": false, "description": "External override for max delay (from cross-batch adaptive)"}
+    "external_max_delay_ms": {"required": false, "description": "External override for max delay (from cross-batch adaptive)"},
+    "collect_comments": {"required": false, "description": "Also collect first-page comments alongside note detail (default false)"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -123,54 +124,85 @@ async function(args) {
         time: card.lastUpdateTime ?? card.last_update_time ?? card.time ?? null
       };
     }
+    function flattenNoteGroups(groups) {
+      const result = [];
+      if (!Array.isArray(groups)) return result;
+      for (const group of groups) {
+        if (Array.isArray(group)) result.push(...group);
+        else if (group) result.push(group);
+      }
+      return result;
+    }
+    function parseInitialState(html) {
+      const match = html.match(/__INITIAL_STATE__=(\{[\s\S]*?\})<\/script>/);
+      if (!match) throw new Error("SSR state not found");
+      return (0, eval)("(" + match[1] + ")");
+    }
+    async function fetchHtml(url) {
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      return await response.text();
+    }
+    function findTokenInCollection(collection, noteId) {
+      if (!Array.isArray(collection)) return null;
+      for (const item of collection) {
+        const id = item?.id || item?.noteId || item?.note_id;
+        if (id === noteId) {
+          const token = item?.xsecToken || item?.xsec_token;
+          if (token) return token;
+        }
+        const card = item?.noteCard || item?.note_card;
+        if (card) {
+          const cardId = card.noteId || card.note_id;
+          if (cardId === noteId) {
+            const token = card.xsecToken || card.xsec_token;
+            if (token) return token;
+          }
+        }
+      }
+      return null;
+    }
     return {
-      sleep,
-      getPinia,
-      getRouter,
-      getStore,
-      toPlain,
-      waitFor,
-      withTimeout,
-      normalizeUser,
-      mapNoteCardItem,
-      parseNoteInput,
-      buildNoteUrl,
-      rememberNoteTokens,
-      resolveNoteToken
+      sleep, getPinia, getRouter, getStore, toPlain, waitFor, withTimeout,
+      normalizeUser, mapNoteCardItem, flattenNoteGroups, parseInitialState, fetchHtml,
+      parseNoteInput, buildNoteUrl, rememberNoteTokens, resolveNoteToken, findTokenInCollection
     };
   })());
 
-  const pinia = helper.getPinia();
-  const userStore = helper.getStore("user");
-  if (!userStore?.loggedIn) return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore — then log in manually" };
-  if (!pinia?._s) return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded" };
+  // Parse notes
+  const notes = (() => {
+    try {
+      if (typeof args.notes === "string") return JSON.parse(args.notes);
+      if (Array.isArray(args.notes)) return args.notes;
+      return [];
+    } catch { return []; }
+  })();
 
-  // Parse parameters
-  let notes;
-  try {
-    notes = typeof args.notes === "string" ? JSON.parse(args.notes) : args.notes;
-    if (!Array.isArray(notes)) return { error: "notes must be an array" };
-  } catch (e) {
-    return { error: "Invalid JSON in notes parameter", detail: e.message };
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return { error: "No valid notes provided", hint: "Provide a JSON array of {noteId, xsecToken} objects" };
   }
 
+  // Config
   const timeBudgetMs = Number(args.time_budget_ms) || 60000;
   const singleNoteTimeoutMs = Number(args.single_note_timeout_ms) || 8000;
   const maxFailures = Number(args.max_failures) || 3;
   const minDelayMs = Number(args.external_min_delay_ms) || Number(args.min_delay_ms) || 600;
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
+  const collectComments = args.collect_comments === true || args.collect_comments === "true";
 
-  const startTime = Date.now();
+  const noteStore = helper.getStore("note");
+  if (!noteStore) {
+    return { error: "Note store not found", hint: "Ensure xiaohongshu.com is fully loaded" };
+  }
+
   const collected = [];
   const failures = [];
-  const noteStore = helper.getStore("note");
-
-  // Adaptive delay parameters
-  let baseDelayMs = minDelayMs + (maxDelayMs - minDelayMs) / 2;
-  let consecutiveSlowNotes = 0;
+  let remaining = [];
   let consecutiveFailures = 0;
+  let consecutiveSlowNotes = 0;
+  let baseDelayMs = minDelayMs;
+  let totalElapsed = 0;
 
-  // Performance metrics
   const metrics = {
     totalNotes: notes.length,
     successCount: 0,
@@ -180,28 +212,24 @@ async function(args) {
     slowNotes: 0
   };
 
-  let totalElapsed = 0;
+  const deadline = Date.now() + timeBudgetMs;
 
   for (let i = 0; i < notes.length; i++) {
-    const item = notes[i];
-    const noteStartTime = Date.now();
-
-    // Layer 1: Total time budget check
-    const elapsedTotal = Date.now() - startTime;
-    if (elapsedTotal > timeBudgetMs) {
-      const remaining = notes.slice(i);
+    // Check time budget
+    if (Date.now() >= deadline) {
+      remaining = notes.slice(i);
       return {
         collected,
         failures,
         remaining,
-        metrics,
+        metrics: { ...metrics, avgElapsedMs: metrics.successCount > 0 ? Math.round(totalElapsed / metrics.successCount) : 0 },
         stopped_reason: "time_budget_exceeded",
-        hint: `Reached ${timeBudgetMs}ms time budget after ${i} notes`
+        hint: `Time budget of ${timeBudgetMs}ms exceeded after processing ${i} notes`
       };
     }
 
-    const noteId = item.noteId || item.note_id;
-    const xsecToken = item.xsecToken || item.xsec_token || helper.resolveNoteToken(noteId);
+    const { noteId, xsecToken } = notes[i];
+    const noteStartTime = Date.now();
 
     if (!noteId) {
       failures.push({ note_id: null, error: "Missing noteId", elapsed_ms: 0 });
@@ -219,6 +247,7 @@ async function(args) {
     let detail = null;
     let error = null;
     let elapsed = 0;
+    let tNav = 0, tApi = 0, tDetail = 0, tComment = 0;
 
     try {
       detail = await helper.withTimeout(
@@ -233,6 +262,7 @@ async function(args) {
                 query: { xsec_token: xsecToken, xsec_source: "" }
               }).catch(() => {});
               await helper.sleep(800);
+              tNav = Date.now() - noteStartTime;
             }
           }
 
@@ -240,6 +270,7 @@ async function(args) {
           if (noteStore.getNoteDetailByNoteId) {
             try {
               await noteStore.getNoteDetailByNoteId(noteId);
+              tApi = Date.now() - noteStartTime;
             } catch {}
           }
 
@@ -247,11 +278,24 @@ async function(args) {
           return await helper.waitFor(() => {
             const current = noteStore.noteDetailMap?.[noteId];
             if (!current?.note || current.note.noteId !== noteId) return null;
-            return helper.toPlain(current);
-          }, singleNoteTimeoutMs);
+            if (tDetail === 0) tDetail = Date.now() - noteStartTime;
+            if (!collectComments) return helper.toPlain(current);
+            // Skip comment wait for notes with 0 comments
+            if (current.note.interactInfo?.commentCount === 0) {
+              if (tComment === 0) tComment = tDetail;
+              return helper.toPlain(current);
+            }
+            // Also wait for auto-loaded comments
+            const list = current.comments?.list;
+            if (Array.isArray(list) && (list.length > 0 || current.comments?.firstRequestFinish)) {
+              if (tComment === 0) tComment = Date.now() - noteStartTime;
+              return helper.toPlain(current);
+            }
+            return null;
+          }, collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs);
         })(),
-        singleNoteTimeoutMs,
-        `Note ${noteId} timed out after ${singleNoteTimeoutMs}ms`
+        collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs,
+        `Note ${noteId} timed out after ${collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs}ms`
       );
 
       elapsed = Date.now() - noteStartTime;
@@ -259,6 +303,12 @@ async function(args) {
     } catch (err) {
       elapsed = Date.now() - noteStartTime;
       error = err.message;
+      try {
+        const bodyText = document.body?.innerText || "";
+        if (/300013|安全限制/.test(bodyText)) {
+          error = "[300013] " + (error || "安全限制");
+        }
+      } catch {}
     }
 
     // Layer 3: Performance monitoring
@@ -271,7 +321,7 @@ async function(args) {
       
       helper.rememberNoteTokens([{ id: noteId, xsecToken: token, noteCard: { noteId } }]);
 
-      collected.push({
+      const resultItem = {
         note_id: noteId,
         xsec_token: token,
         title: note.title ?? null,
@@ -293,9 +343,36 @@ async function(args) {
         last_update_time: note.lastUpdateTime ?? null,
         _diagnostics: {
           elapsed_ms: elapsed,
-          slow: elapsed > 5000
+          slow: elapsed > 5000,
+          breakdown_ms: {
+            nav: tNav,
+            api: tApi - tNav,
+            detail: tDetail - tApi,
+            comment: tComment > 0 ? tComment - tDetail : 0
+          }
         }
-      });
+      };
+
+      // Collect comments data if available
+      if (collectComments && detail.comments) {
+        resultItem.comments_data = {
+          list: (detail.comments.list || []).map((c) => ({
+            id: c.id,
+            content: c.content,
+            likeCount: c.likeCount ?? c.like_count ?? 0,
+            userInfo: {
+              nickname: c.userInfo?.nickname ?? null,
+              userId: c.userInfo?.userId ?? c.userInfo?.user_id ?? null,
+            },
+            createTime: c.createTime ?? c.create_time ?? null,
+            subCommentCount: c.subCommentCount ?? c.sub_comment_count ?? 0,
+          })),
+          hasMore: detail.comments.hasMore ?? false,
+          cursor: detail.comments.cursor ?? null,
+        };
+      }
+
+      collected.push(resultItem);
 
       metrics.successCount++;
       totalElapsed += elapsed;
