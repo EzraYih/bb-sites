@@ -1,6 +1,5 @@
 /* @meta
-{
-  "name": "xiaohongshu/notes-batch",
+{  "name": "xiaohongshu/notes-batch",
   "description": "Batch fetch note details with adaptive timeout and rate limiting detection",
   "domain": "www.xiaohongshu.com",
   "args": {
@@ -23,7 +22,7 @@
 async function(args) {
   if (!args.notes) return { error: "Missing argument: notes" };
 
-  const helper = globalThis.__bbBrowserXhsHelper?.rememberNoteTokens
+  const helper = globalThis.__bbBrowserXhsHelper?.findNoteInDetailMap
     ? globalThis.__bbBrowserXhsHelper
     : (globalThis.__bbBrowserXhsHelper = (() => {
     function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -125,58 +124,61 @@ async function(args) {
       };
     }
     function flattenNoteGroups(groups) {
-      const result = [];
-      if (!Array.isArray(groups)) return result;
+      if (!Array.isArray(groups)) return [];
+      const items = [];
       for (const group of groups) {
-        if (Array.isArray(group)) result.push(...group);
-        else if (group) result.push(group);
+        if (!group || typeof group !== "object") continue;
+        if (Array.isArray(group)) { items.push(...group); continue; }
+        if (group.noteGroup && Array.isArray(group.noteGroup)) { items.push(...group.noteGroup); continue; }
+        if (Array.isArray(group.items)) { items.push(...group.items); continue; }
       }
-      return result;
+      return items;
     }
-    function parseInitialState(html) {
-      const match = html.match(/__INITIAL_STATE__=(\{[\s\S]*?\})<\/script>/);
-      if (!match) throw new Error("SSR state not found");
-      return (0, eval)("(" + match[1] + ")");
+    function collectNoteItems() {
+      const noteStore = getStore("note");
+      if (!noteStore) return [];
+      const raw = noteStore.noteList || noteStore.note_list || noteStore.notes || [];
+      if (Array.isArray(raw)) return raw;
+      try { return Object.values(raw); } catch { return []; }
     }
-    async function fetchHtml(url) {
-      const response = await fetch(url, { credentials: "include" });
-      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-      return await response.text();
+    function collectNoteDetailMap() {
+      const noteStore = getStore("note");
+      if (!noteStore) return {};
+      const map = noteStore.noteDetailMap || noteStore.note_detail_map || noteStore.detail || {};
+      return map;
     }
-    function findTokenInCollection(collection, noteId) {
-      if (!Array.isArray(collection)) return null;
-      for (const item of collection) {
-        const id = item?.id || item?.noteId || item?.note_id;
-        if (id === noteId) {
-          const token = item?.xsecToken || item?.xsec_token;
-          if (token) return token;
-        }
-        const card = item?.noteCard || item?.note_card;
-        if (card) {
-          const cardId = card.noteId || card.note_id;
-          if (cardId === noteId) {
-            const token = card.xsecToken || card.xsec_token;
-            if (token) return token;
-          }
-        }
+    function findNoteInDetailMap(noteId) {
+      const map = collectNoteDetailMap();
+      if (typeof map.get === "function") return map.get(noteId);
+      if (map[noteId]) return map[noteId];
+      for (const [key, value] of Object.entries(map)) {
+        if (key === noteId || value?.noteId === noteId || value?.note_id === noteId) return value;
+      }
+      return null;
+    }
+    function findNoteInNoteList(noteId) {
+      const items = collectNoteItems();
+      for (const item of items) {
+        const id = item?.id || item?.noteId || item?.note_id || item?.noteCard?.noteId || item?.note_card?.note_id;
+        if (id === noteId) return mapNoteCardItem(item);
       }
       return null;
     }
     return {
-      sleep, getPinia, getRouter, getStore, toPlain, waitFor, withTimeout,
-      normalizeUser, mapNoteCardItem, flattenNoteGroups, parseInitialState, fetchHtml,
-      parseNoteInput, buildNoteUrl, rememberNoteTokens, resolveNoteToken, findTokenInCollection
+      sleep, getApp, getGlobals, getPinia, getRouter, getStore, toPlain, waitFor, withTimeout,
+      parseNoteInput, buildNoteUrl, rememberNoteTokens, resolveNoteToken,
+      normalizeUser, mapNoteCardItem, flattenNoteGroups, collectNoteItems,
+      collectNoteDetailMap, findNoteInDetailMap, findNoteInNoteList
     };
   })());
 
-  // Parse notes
-  const notes = (() => {
-    try {
-      if (typeof args.notes === "string") return JSON.parse(args.notes);
-      if (Array.isArray(args.notes)) return args.notes;
-      return [];
-    } catch { return []; }
-  })();
+  // Validate and parse note inputs
+  let notes;
+  try {
+    notes = typeof args.notes === "string" ? JSON.parse(args.notes) : args.notes;
+  } catch {
+    return { error: "Invalid notes argument, must be a JSON array" };
+  }
 
   if (!Array.isArray(notes) || notes.length === 0) {
     return { error: "No valid notes provided", hint: "Provide a JSON array of {noteId, xsecToken} objects" };
@@ -184,7 +186,7 @@ async function(args) {
 
   // Config
   const timeBudgetMs = Number(args.time_budget_ms) || 60000;
-  const singleNoteTimeoutMs = Number(args.single_note_timeout_ms) || 8000;
+  let singleNoteTimeoutMs = Number(args.single_note_timeout_ms) || Number(args.singleNoteTimeoutMs) || 8000;
   const maxFailures = Number(args.max_failures) || 3;
   const minDelayMs = Number(args.external_min_delay_ms) || Number(args.min_delay_ms) || 600;
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
@@ -194,6 +196,8 @@ async function(args) {
   if (!noteStore) {
     return { error: "Note store not found", hint: "Ensure xiaohongshu.com is fully loaded" };
   }
+
+
 
   const collected = [];
   const failures = [];
@@ -212,94 +216,102 @@ async function(args) {
     slowNotes: 0
   };
 
-  const deadline = Date.now() + timeBudgetMs;
+  let startTime = Date.now();
 
   for (let i = 0; i < notes.length; i++) {
     // Check time budget
-    if (Date.now() >= deadline) {
+    let elapsed = Date.now() - startTime;
+    if (elapsed >= timeBudgetMs) {
       remaining = notes.slice(i);
-      return {
-        collected,
-        failures,
-        remaining,
-        metrics: { ...metrics, avgElapsedMs: metrics.successCount > 0 ? Math.round(totalElapsed / metrics.successCount) : 0 },
-        stopped_reason: "time_budget_exceeded",
-        hint: `Time budget of ${timeBudgetMs}ms exceeded after processing ${i} notes`
-      };
+      break;
     }
+
+    // Pre-check for 300013 platform limit
+    try {
+      const bodyText = document.body?.innerText || "";
+      if (/300013|安全限制/.test(bodyText)) {
+        const refNoteId = notes[i].noteId || notes[i].note_id || "unknown";
+        failures.push({
+          note_id: refNoteId,
+          error: "[300013] platform limit",
+          elapsed_ms: 0
+        });
+        metrics.failureCount++;
+        remaining = notes.slice(i);
+        return {
+          collected, failures, remaining, metrics,
+          stopped_reason: "consecutive_failures",
+          hint: "platform limit (300013) detected"
+        };
+      }
+    } catch {}
 
     const { noteId, xsecToken } = notes[i];
-    const noteStartTime = Date.now();
-
-    if (!noteId) {
-      failures.push({ note_id: null, error: "Missing noteId", elapsed_ms: 0 });
-      metrics.failureCount++;
-      continue;
-    }
-
-    if (!xsecToken) {
-      failures.push({ note_id: noteId, error: "Missing xsecToken", elapsed_ms: 0 });
-      metrics.failureCount++;
-      continue;
-    }
-
-    // Layer 2: Single note timeout control
-    let detail = null;
     let error = null;
-    let elapsed = 0;
+    let detail = null;
+    let noteStartTime = Date.now();
     let tNav = 0, tApi = 0, tDetail = 0, tComment = 0;
 
     try {
-      detail = await helper.withTimeout(
-        (async () => {
-          // Navigate to note page if not already there
-          const currentNoteId = noteStore.noteDetailMap ? Object.keys(noteStore.noteDetailMap)[0] : null;
-          if (currentNoteId !== noteId) {
-            const router = helper.getRouter();
-            if (router) {
-              router.push({
-                path: `/explore/${noteId}`,
-                query: { xsec_token: xsecToken, xsec_source: "" }
-              }).catch(() => {});
-              await helper.sleep(800);
-              tNav = Date.now() - noteStartTime;
-            }
-          }
+      // Layer 1: Navigate to note page (SPA navigation via relative path)
+      const router = helper.getRouter();
+      if (!router) {
+        error = "Vue Router not found";
+      } else if (!noteId) {
+        error = "Missing noteId";
+      } else {
+        router.push({
+          path: `/explore/${noteId}`,
+          query: { xsec_token: xsecToken || "", xsec_source: "" }
+        }).catch(() => {});
+        await helper.sleep(1800);
+      }
+      // Trigger API fetch via noteStore (matches feed.js pattern)
+      const ns = helper.getStore("note");
+      if (ns) {
+        if (ns.setCurrentNoteId) ns.setCurrentNoteId(noteId);
+        if (ns.getNoteDetailByNoteId) {
+          try {
+            await helper.withTimeout(ns.getNoteDetailByNoteId(noteId), 6000, "Note detail fetch timed out");
+          } catch {}
+        }
+      }
+      tNav = Date.now() - noteStartTime;
+      if (!error) {
+        // Layer 2: Wait for store response
+        await helper.sleep(200);
+        tApi = Date.now() - noteStartTime;
 
-          // Call internal API
-          if (noteStore.getNoteDetailByNoteId) {
-            try {
-              await noteStore.getNoteDetailByNoteId(noteId);
-              tApi = Date.now() - noteStartTime;
-            } catch {}
-          }
-
-          // Wait for data ready
-          return await helper.waitFor(() => {
-            const current = noteStore.noteDetailMap?.[noteId];
-            if (!current?.note || current.note.noteId !== noteId) return null;
-            if (tDetail === 0) tDetail = Date.now() - noteStartTime;
-            if (!collectComments) return helper.toPlain(current);
-            // Skip comment wait for notes with 0 comments
-            if (current.note.interactInfo?.commentCount === 0) {
-              if (tComment === 0) tComment = tDetail;
-              return helper.toPlain(current);
-            }
-            // Also wait for auto-loaded comments
-            const list = current.comments?.list;
-            if (Array.isArray(list) && (list.length > 0 || current.comments?.firstRequestFinish)) {
-              if (tComment === 0) tComment = Date.now() - noteStartTime;
-              return helper.toPlain(current);
-            }
+        // Layer 3: Single waitFor for note detail + optional comments (feed.js pattern)
+        let current = await helper.waitFor(
+          () => {
+            const nd = helper.findNoteInDetailMap(noteId);
+            if (!nd?.note) return null;
+            if (!collectComments) return nd;
+            // Also wait for first-page comments
+            const cm = nd.comments;
+            if (cm?.list?.length > 0 || cm?.firstRequestFinish) return nd;
             return null;
-          }, collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs);
-        })(),
-        collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs,
-        `Note ${noteId} timed out after ${collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs}ms`
-      );
+          },
+          collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs
+        );
+        tDetail = Date.now() - noteStartTime;
 
-      elapsed = Date.now() - noteStartTime;
+        // Record comment timing if applicable
+        if (current && current.comments?.list) {
+          tComment = Date.now() - noteStartTime;
+        }
+        if (tComment === 0) tComment = Date.now() - noteStartTime;
 
+        // Handle timeout scenario with meaningful error message
+        if (!current) {
+          error = "Note " + noteId + " timed out after " + (collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs) + "ms";
+        } else {
+          detail = helper.toPlain(current);
+        }
+
+        elapsed = Date.now() - noteStartTime;
+      }
     } catch (err) {
       elapsed = Date.now() - noteStartTime;
       error = err.message;
@@ -310,7 +322,6 @@ async function(args) {
         }
       } catch {}
     }
-
     // Layer 3: Performance monitoring
     metrics.maxElapsedMs = Math.max(metrics.maxElapsedMs, elapsed);
 
@@ -318,7 +329,7 @@ async function(args) {
       // Success
       const note = detail.note;
       const token = note.xsecToken ?? xsecToken;
-      
+
       helper.rememberNoteTokens([{ id: noteId, xsecToken: token, noteCard: { noteId } }]);
 
       const resultItem = {
@@ -374,6 +385,11 @@ async function(args) {
 
       collected.push(resultItem);
 
+      // Clean up noteDetailMap to prevent SPA reactivity bloat
+      if (noteStore && noteStore.noteDetailMap) {
+        delete noteStore.noteDetailMap[noteId];
+      }
+
       metrics.successCount++;
       totalElapsed += elapsed;
       consecutiveFailures = 0;
@@ -384,6 +400,7 @@ async function(args) {
         metrics.slowNotes++;
         if (consecutiveSlowNotes >= 2) {
           baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
+          singleNoteTimeoutMs = Math.max(2000, Math.round(singleNoteTimeoutMs * 0.8));
         }
       } else {
         consecutiveSlowNotes = 0;
@@ -433,8 +450,9 @@ async function(args) {
   return {
     collected,
     failures,
-    remaining: [],
+    remaining,
     metrics,
-    stopped_reason: "completed"
+    stopped_reason: remaining.length > 0 ? "time_budget_exceeded" : "completed"
   };
 }
+
