@@ -18,7 +18,7 @@ async function(args) {
 
   const helper = globalThis.__bbBrowserXhsHelper?.fetchHtml
     ? globalThis.__bbBrowserXhsHelper
-    : (globalThis.__bbBrowserXhsHelper = (() => {
+    : (() => {
     async function fetchHtml(url) {
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);

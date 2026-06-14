@@ -275,6 +275,12 @@ async function(args) {
             await helper.withTimeout(ns.getNoteDetailByNoteId(noteId), 6000, "Note detail fetch timed out");
           } catch {}
         }
+        // Ensure comment placeholder does not short-circuit waitFor
+        if (collectComments) {
+          if (ns?.noteDetailMap?.[noteId]?.comments?.firstRequestFinish === true) {
+            ns.noteDetailMap[noteId].comments.firstRequestFinish = false;
+          }
+        }
       }
       tNav = Date.now() - noteStartTime;
       if (!error) {
@@ -288,9 +294,9 @@ async function(args) {
             const nd = helper.findNoteInDetailMap(noteId);
             if (!nd?.note) return null;
             if (!collectComments) return nd;
-            // Also wait for first-page comments
+            // Wait for first-page comments loaded by SPA
             const cm = nd.comments;
-            if (cm?.list?.length > 0 || cm?.firstRequestFinish) return nd;
+            if (cm?.list?.length > 0) return nd;
             return null;
           },
           collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs
@@ -309,6 +315,8 @@ async function(args) {
         } else {
           detail = helper.toPlain(current);
         }
+
+
 
         elapsed = Date.now() - noteStartTime;
       }
@@ -455,4 +463,5 @@ async function(args) {
     stopped_reason: remaining.length > 0 ? "time_budget_exceeded" : "completed"
   };
 }
+
 
