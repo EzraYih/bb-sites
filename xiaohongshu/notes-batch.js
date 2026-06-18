@@ -118,6 +118,7 @@ async function(args) {
           : `https://www.xiaohongshu.com/explore/${noteId}`,
         author: user.nickname ?? user.nickName ?? null,
         author_id: user.userId ?? user.user_id ?? null,
+        author_followers: user.fans ?? null,
         likes: card.interactInfo?.likedCount ?? card.interact_info?.liked_count ?? null,
         cover: card.cover?.urlDefault ?? card.cover?.urlPre ?? card.cover?.url ?? card.imageList?.[0]?.urlDefault ?? null,
         time: card.lastUpdateTime ?? card.last_update_time ?? card.time ?? null
@@ -192,7 +193,11 @@ async function(args) {
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
   const collectComments = args.collect_comments === true || args.collect_comments === "true";
 
-  const noteStore = helper.getStore("note");
+  const noteStore = await helper.waitFor(
+    () => helper.getStore("note"),
+    singleNoteTimeoutMs,
+    250
+  );
   if (!noteStore) {
     return { error: "Note store not found", hint: "Ensure xiaohongshu.com is fully loaded" };
   }
@@ -349,6 +354,7 @@ async function(args) {
         url: token ? helper.buildNoteUrl(noteId, token) : `https://www.xiaohongshu.com/explore/${noteId}`,
         author: note.user?.nickname ?? null,
         author_id: note.user?.userId ?? note.user?.user_id ?? null,
+        author_followers: note.user?.fans ?? null,
         likes: note.interactInfo?.likedCount ?? null,
         comments: note.interactInfo?.commentCount ?? null,
         collects: note.interactInfo?.collectedCount ?? null,
