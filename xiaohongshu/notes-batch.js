@@ -193,13 +193,15 @@ async function(args) {
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
   const collectComments = args.collect_comments === true || args.collect_comments === "true";
 
-  const noteStore = await helper.waitFor(
-    () => helper.getStore("note"),
-    singleNoteTimeoutMs,
+  // Wait for SPA to be ready before processing notes (use a generous timeout
+  // separate from singleNoteTimeoutMs, since this is a one-time init check)
+  const appReady = await helper.waitFor(
+    () => helper.getApp(),
+    8000,
     250
   );
-  if (!noteStore) {
-    return { error: "Note store not found", hint: "Ensure xiaohongshu.com is fully loaded" };
+  if (!appReady) {
+    return { error: "Vue app not found", hint: "Ensure xiaohongshu.com is fully loaded" };
   }
 
 
@@ -400,8 +402,9 @@ async function(args) {
       collected.push(resultItem);
 
       // Clean up noteDetailMap to prevent SPA reactivity bloat
-      if (noteStore && noteStore.noteDetailMap) {
-        delete noteStore.noteDetailMap[noteId];
+      const currentNoteStore = helper.getStore("note");
+      if (currentNoteStore && currentNoteStore.noteDetailMap) {
+        delete currentNoteStore.noteDetailMap[noteId];
       }
 
       metrics.successCount++;
