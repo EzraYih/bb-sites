@@ -212,7 +212,7 @@ async function(args) {
   if (!userStore.loggedIn) return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore — then log in manually" };
 
   const directUser = helper.normalizeUser(userStore.userInfo) || helper.normalizeUser(userStore.userPageData?.basicInfo);
-  if (directUser) return directUser;
+  // Removed: always verify via network request, not stale Pinia cache
 
   let captured = null;
   const origOpen = XMLHttpRequest.prototype.open;
