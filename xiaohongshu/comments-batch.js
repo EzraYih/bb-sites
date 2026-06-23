@@ -53,7 +53,7 @@ async function(args) {
       nickname: user.nickname ?? user.name ?? user.nickName ?? null,
       userid: user.user_id ?? user.userId ?? user.id ?? null,
       red_id: user.red_id ?? user.redId ?? null,
-      avatar: user.avatar ?? null
+      avatar: user.image ?? user.avatar ?? null
     };
   }
 
@@ -145,12 +145,12 @@ async function(args) {
         var c = page1Comments[ci];
         allComments.push({
           id: c.id, content: c.content || c.text || null,
-          like_count: c.like_count || c.likes || null,
-          created_time: c.create_time || c.time || null,
-          ip_location: c.ip_location || null,
+          like_count: Number(c.likeCount ?? c.like_count ?? c.likes) ?? null,
+          created_time: c.createTime ?? c.create_time ?? c.time ?? null,
+          ip_location: c.ipLocation ?? c.ip_location ?? null,
           user: normalizeUser(c.user_info || c.userInfo || c.user || {}),
-          sub_comment_count: c.sub_comment_count || 0,
-          target_comment_id: c.target_comment_id || null
+          sub_comment_count: Number(c.subCommentCount ?? c.sub_comment_count) ?? 0,
+          target_comment_id: c.targetCommentId ?? c.target_comment_id ?? null
         });
       }
 
@@ -179,12 +179,12 @@ async function(args) {
                     var nc = newList[ni];
                     allComments.push({
                       id: nc.id, content: nc.content || nc.text || null,
-                      like_count: nc.like_count || nc.likes || null,
-                      created_time: nc.create_time || nc.time || null,
-                      ip_location: nc.ip_location || null,
-                      user: normalizeUser(nc.user_info || nc.user || {}),
-                      sub_comment_count: nc.sub_comment_count || 0,
-                      target_comment_id: nc.target_comment_id || null
+                      like_count: Number(nc.likeCount ?? nc.like_count ?? nc.likes) ?? null,
+                      created_time: nc.createTime ?? nc.create_time ?? nc.time ?? null,
+                      ip_location: nc.ipLocation ?? nc.ip_location ?? null,
+                      user: normalizeUser(nc.userInfo ?? nc.user_info ?? nc.user ?? {}),
+                      sub_comment_count: Number(nc.subCommentCount ?? nc.sub_comment_count) ?? 0,
+                      target_comment_id: nc.targetCommentId ?? nc.target_comment_id ?? null
                     });
                   }
                 }
@@ -221,12 +221,12 @@ async function(args) {
                       var nc2 = items[ni2];
                       allComments.push({
                         id: nc2.id, content: nc2.content || nc2.text || null,
-                        like_count: nc2.like_count || nc2.likes || null,
-                        created_time: nc2.create_time || nc2.time || null,
-                        ip_location: nc2.ip_location || null,
-                        user: normalizeUser(nc2.user_info || nc2.user || {}),
-                        sub_comment_count: nc2.sub_comment_count || 0,
-                        target_comment_id: nc2.target_comment_id || null
+                        like_count: Number(nc2.likeCount ?? nc2.like_count ?? nc2.likes) ?? null,
+                        created_time: nc2.createTime ?? nc2.create_time ?? nc2.time ?? null,
+                        ip_location: nc2.ipLocation ?? nc2.ip_location ?? null,
+                        user: normalizeUser(nc2.userInfo ?? nc2.user_info ?? nc2.user ?? {}),
+                        sub_comment_count: Number(nc2.subCommentCount ?? nc2.sub_comment_count) ?? 0,
+                        target_comment_id: nc2.targetCommentId ?? nc2.target_comment_id ?? null
                       });
                     }
                   }
