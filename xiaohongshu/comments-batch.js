@@ -279,6 +279,20 @@ async function(args) {
       if (elapsed > 10000) metrics.slowNotes++;
     }
 
+    // Emit progress for streaming consumers
+    try {
+      console.log(JSON.stringify({__bb_progress: {
+        done: i + 1,
+        total: notes.length,
+        noteId: noteId,
+        success: !error,
+        error: error || null,
+        commentCount: allComments.length,
+        collected: collected.length,
+        failures: failures.length
+      }}));
+    } catch(e) {}
+
     if (i < notes.length - 1) await sleep(1000 + Math.random() * 1000);
   }
 

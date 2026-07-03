@@ -179,6 +179,19 @@ async function(args) {
       }
     }
 
+    // Emit progress for streaming consumers
+    try {
+      console.log(JSON.stringify({__bb_progress: {
+        done: i + 1,
+        total: users.length,
+        userId: user.userId,
+        success: !!detail,
+        error: error || null,
+        collected: collected.length,
+        failures: failures.length
+      }}));
+    } catch(e) {}
+
     // Delay between users (skip long delay after SPA fallback)
     if (i < users.length - 1) {
       if (usedFallback) {

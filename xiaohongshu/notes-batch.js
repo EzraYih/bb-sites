@@ -452,6 +452,19 @@ async function(args) {
       baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
     }
 
+    // Emit progress for streaming consumers (bb-browser --progress polls console)
+    try {
+      console.log(JSON.stringify({__bb_progress: {
+        done: i + 1,
+        total: notes.length,
+        noteId: noteId,
+        success: !!detail && !!detail.note,
+        error: error || null,
+        collected: collected.length,
+        failures: failures.length
+      }}));
+    } catch(e) {}
+
     // Layer 5: Adaptive delay
     if (i < notes.length - 1) {
       const jitter = Math.random() * baseDelayMs * 0.3;
