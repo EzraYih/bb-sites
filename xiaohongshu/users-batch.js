@@ -79,6 +79,16 @@ async function(args) {
       return pageData;
     }
 
+    function classifyAccountType(verifyInfo) {
+      var vType = verifyInfo.redOfficialVerifyType;
+      // 0 / null / undefined → 未认证个人号
+      // 1 → 企业认证
+      // 2 → 个人认证（医生、律师等）
+      if (vType === 1) return "enterprise";
+      if (vType === 2) return "professional";
+      return "personal";
+    }
+
     function extractDetail(pageData, userId, parseNumericCount) {
       var basicInfo = pageData.basicInfo || {};
       var verifyInfo = pageData.verifyInfo || {};
@@ -90,9 +100,9 @@ async function(args) {
       return {
         user_id: basicInfo.userId || basicInfo.user_id || userId,
         nickname: basicInfo.nickname || null,
-        account_type: verifyInfo.redOfficialVerifyType === 1 ? "verified" : "personal",
+        account_type: classifyAccountType(verifyInfo),
         follower_count: parseNumericCount(fansItem ? fansItem.count : null),
-        verified: verifyInfo.redOfficialVerifyType === 1,
+        verified: verifyInfo.redOfficialVerifyType === 1 || verifyInfo.redOfficialVerifyType === 2,
         red_id: basicInfo.redId || basicInfo.red_id || null,
         desc: basicInfo.desc || basicInfo.description || null,
         gender: basicInfo.gender !== undefined ? basicInfo.gender : null,
