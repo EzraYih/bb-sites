@@ -253,6 +253,34 @@ async function(args) {
       }
     } catch {}
 
+    // Pre-check for 300031 per-note unavailable (404 page)
+    try {
+      const currentUrl = String(location.href || "");
+      if (currentUrl.indexOf("/404") >= 0 || /error_code=300031/.test(currentUrl)) {
+        const failedNoteId = notes[i].noteId || notes[i].note_id || "unknown";
+        failures.push({
+          note_id: failedNoteId,
+          error: "[300031] note unavailable",
+          elapsed_ms: 0
+        });
+        metrics.failureCount++;
+        consecutiveFailures++;
+        if (consecutiveFailures >= maxFailures) {
+          remaining = notes.slice(i + 1);
+          return {
+            collected, failures, remaining, metrics,
+            stopped_reason: "consecutive_failures",
+            hint: `${maxFailures} consecutive 300031 failures`
+          };
+        }
+        // 导航回 /explore 恢复 SPA
+        const router = helper.getRouter();
+        if (router) router.push({ path: "/explore" }).catch(() => {});
+        await helper.sleep(2000);
+        continue;
+      }
+    } catch {}
+
     const { noteId, xsecToken } = notes[i];
     let error = null;
     let detail = null;

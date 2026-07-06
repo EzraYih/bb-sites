@@ -1,7 +1,7 @@
 /* @meta
 {
   "name": "xiaohongshu/users-batch",
-  "description": "Batch fetch user profiles from xiaohongshu.com (hybrid: fetch+SSR -> SPA+store fallback)",
+  "description": "Batch fetch user profiles from xiaohongshu.com (SPA navigation + Pinia store)",
   "domain": "www.xiaohongshu.com",
   "args": {
     "users": {"required": true, "description": "JSON array of {userId}"},
@@ -20,22 +20,10 @@
 async function(args) {
   if (!args.users) return { error: "Missing argument: users" };
 
-  const helper = globalThis.__bbBrowserXhsHelperV2?.fetchHtml
+  const helper = globalThis.__bbBrowserXhsHelperV2?.fetchViaSPA
     ? globalThis.__bbBrowserXhsHelperV2
     : (globalThis.__bbBrowserXhsHelperV2 = (() => {
     function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-
-    async function fetchHtml(url) {
-      const response = await fetch(url, { credentials: "include" });
-      if (!response.ok) throw new Error("Request failed: " + response.status);
-      return await response.text();
-    }
-
-    function parseInitialState(html) {
-      const match = html.match(/__INITIAL_STATE__=(\{[\s\S]*?\})<\/script>/);
-      if (!match) throw new Error("SSR state not found");
-      return (0, eval)("(" + match[1] + ")");
-    }
 
     function getApp() { return document.querySelector("#app")?.__vue_app__ || null; }
     function getGlobals() { var a = getApp(); return a ? a.config.globalProperties : null; }
@@ -43,23 +31,50 @@ async function(args) {
     function getStore(name) { var p = getPinia(); return p && p._s ? p._s.get(name) : null; }
     function getRouter() { var g = getGlobals(); return g ? g.$router : null; }
 
-    // SPA fallback: navigate then read from Pinia store
-    async function fetchViaSPA(userId) {
+    // Condition-based wait: poll predicate until true or timeout
+    async function waitFor(predicate, timeoutMs, intervalMs) {
+      intervalMs = intervalMs || 300;
+      var deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        try { var result = await predicate(); if (result) return result; } catch(e) {}
+        await sleep(intervalMs);
+      }
+      return null;
+    }
+
+    // SPA navigation: navigate then read from Pinia store (primary method)
+    async function fetchViaSPA(userId, timeoutMs) {
       var router = getRouter();
       if (!router) throw new Error("SPA router not available");
 
-      await router.push({ path: "/user/profile/" + encodeURIComponent(userId) });
-      await sleep(2000);
-
+      // Clear stale data to force fresh load
       var userStore = getStore("user");
-      if (userStore && typeof userStore.fetchProfilePageData === "function") {
-        var result = await userStore.fetchProfilePageData(userId);
+      if (userStore && userStore.userPageData) {
+        try { userStore.userPageData = null; } catch(e) {}
       }
 
-      await sleep(5000);
+      await router.push({ path: "/user/profile/" + encodeURIComponent(userId) });
 
-      var store2 = getStore("user");
-      var pageData = store2 ? store2.userPageData : null;
+      // Wait for store to populate (replaces fixed 2s + 5s sleep)
+      var pageData = await waitFor(function() {
+        var store = getStore("user");
+        if (!store || !store.userPageData) return null;
+        if (!store.userPageData.basicInfo) return null;
+        return store.userPageData;
+      }, timeoutMs || 8000, 300);
+
+      // If store didn't auto-populate, try explicit fetch
+      if (!pageData) {
+        var store2 = getStore("user");
+        if (store2 && typeof store2.fetchProfilePageData === "function") {
+          try { await store2.fetchProfilePageData(userId); } catch(e) {}
+          pageData = await waitFor(function() {
+            var s = getStore("user");
+            return s && s.userPageData && s.userPageData.basicInfo ? s.userPageData : null;
+          }, 5000, 300);
+        }
+      }
+
       if (!pageData || !pageData.basicInfo) throw new Error("SPA user data not loaded");
       return pageData;
     }
@@ -86,7 +101,7 @@ async function(args) {
       };
     }
 
-    return { sleep, fetchHtml, parseInitialState, getStore, getRouter, fetchViaSPA, extractDetail };
+    return { sleep, getStore, getRouter, waitFor, fetchViaSPA, extractDetail };
   })());
 
   var userStore = helper.getStore("user");
@@ -106,8 +121,9 @@ async function(args) {
 
   var timeBudgetMs = Math.max(0, Number(args.time_budget_ms || 0) || 60000);
   var maxFailures = Math.max(1, Number(args.max_failures || 0) || 3);
-  var minDelayMs = Math.max(0, Number(args.min_delay_ms || 0) || 600);
-  var maxDelayMs = Math.max(minDelayMs, Number(args.max_delay_ms || 0) || 1500);
+  var minDelayMs = Math.max(0, Number(args.min_delay_ms || 0) || 2000);
+  var maxDelayMs = Math.max(minDelayMs, Number(args.max_delay_ms || 0) || 4000);
+  var singleUserTimeoutMs = Math.max(1000, Number(args.single_user_timeout_ms || 0) || 10000);
 
   function parseNumericCount(count) {
     if (typeof count === "number") return count;
@@ -135,40 +151,63 @@ async function(args) {
       break;
     }
 
+    // ── 300013 会话级安全限制检测 ──
+    try {
+      var bodyText = document.body?.innerText || "";
+      if (/300013|安全限制/.test(bodyText)) {
+        remaining = users.slice(i);
+        return {
+          collected: collected, failures: failures, remaining: remaining,
+          metrics: {
+            totalNotes: users.length, successCount: collected.length, failureCount: failures.length,
+            avgElapsedMs: collected.length > 0 ? Math.round(totalElapsed / collected.length) : 0,
+            maxElapsedMs: maxElapsedMs, slowNotes: 0
+          },
+          stopped_reason: "consecutive_failures",
+          hint: "platform limit (300013) detected"
+        };
+      }
+    } catch(e) {}
+
+    // ── 300031/404 单用户不可访问检测 ──
+    try {
+      var currentUrl = String(location.href || "");
+      if (currentUrl.indexOf("/404") >= 0 || /error_code=300031/.test(currentUrl)) {
+        failures.push({ user_id: users[i].userId, error: "[300031/404] page unavailable", elapsed_ms: 0 });
+        consecutiveFailures++;
+        if (consecutiveFailures >= maxFailures) {
+          remaining = users.slice(i + 1);
+          break;
+        }
+        var router = helper.getRouter();
+        if (router) router.push({ path: "/explore" }).catch(function() {});
+        await helper.sleep(2000);
+        continue;
+      }
+    } catch(e) {}
+
     var user = users[i];
     var userStart = Date.now();
     var error = null;
     var detail = null;
-    var usedFallback = false;
 
-    // ── Method 1: fetch + SSR parse (fast path) ──
+    // ── SPA navigation + Pinia store (唯一方法) ──
+    // Uses router.push so requests carry proper x-s/x-t signatures and Referer
     try {
-      var html = await helper.fetchHtml("https://www.xiaohongshu.com/user/profile/" + encodeURIComponent(user.userId));
-      var state = helper.parseInitialState(html);
-      var upd = state ? state.user : null;
-      if (!upd || !upd.userPageData) throw new Error("SSR state missing userPageData");
-      detail = helper.extractDetail(upd.userPageData, user.userId, parseNumericCount);
-    } catch (fetchErr) {
-      // ── Method 2: SPA navigation + Pinia store (fallback) ──
-      try {
-        var pageData = await helper.fetchViaSPA(user.userId);
-        detail = helper.extractDetail(pageData, user.userId, parseNumericCount);
-        usedFallback = true;
-      } catch (spaErr) {
-        error = "fetchSSR:" + (fetchErr.message || "?") + " | spa:" + (spaErr.message || "?");
-      }
+      var pageData = await helper.fetchViaSPA(user.userId, singleUserTimeoutMs);
+      detail = helper.extractDetail(pageData, user.userId, parseNumericCount);
+    } catch (spaErr) {
+      error = "spa:" + (spaErr.message || "?");
     }
 
     var userElapsed = Date.now() - userStart;
     if (userElapsed > maxElapsedMs) maxElapsedMs = userElapsed;
 
     if (detail) {
-      detail._diagnostics = { elapsed_ms: userElapsed, used_fallback: usedFallback };
+      detail._diagnostics = { elapsed_ms: userElapsed };
       collected.push(detail);
       consecutiveFailures = 0;
       totalElapsed += userElapsed;
-      // After SPA fallback, reset delay (already waited long enough)
-      if (usedFallback) baseDelayMs = minDelayMs;
     } else {
       failures.push({ user_id: user.userId, error: error, elapsed_ms: userElapsed });
       consecutiveFailures++;
@@ -192,14 +231,10 @@ async function(args) {
       }}));
     } catch(e) {}
 
-    // Delay between users (skip long delay after SPA fallback)
+    // Delay between users
     if (i < users.length - 1) {
-      if (usedFallback) {
-        await helper.sleep(minDelayMs);
-      } else {
-        var jitter = Math.random() * baseDelayMs * 0.3;
-        await helper.sleep(baseDelayMs + jitter);
-      }
+      var jitter = Math.random() * baseDelayMs * 0.3;
+      await helper.sleep(baseDelayMs + jitter);
     }
   }
 

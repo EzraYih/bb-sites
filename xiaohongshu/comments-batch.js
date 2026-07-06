@@ -70,12 +70,45 @@ async function(args) {
   if (!router) return { error: "Router not available: page not fully loaded" };
 
   for (var i = 0; i < notes.length; i++) {
+    // ── 300013 会话级安全限制检测 ──
+    try {
+      var bodyText = document.body?.innerText || "";
+      if (/300013|安全限制/.test(bodyText)) {
+        remaining = notes.slice(i);
+        return {
+          collected: collected, failures: failures, remaining: remaining,
+          metrics: metrics, stopped_reason: "consecutive_failures",
+          hint: "platform limit (300013) detected"
+        };
+      }
+    } catch(e) {}
+
+    // ── 300031/404 单笔记不可访问检测 ──
+    try {
+      var currentUrl = String(location.href || "");
+      if (currentUrl.indexOf("/404") >= 0 || /error_code=300031/.test(currentUrl)) {
+        var failedNoteId = notes[i].noteId || notes[i].note_id || "unknown";
+        failures.push({ note_id: failedNoteId, error: "[300031] note unavailable", elapsed_ms: 0 });
+        metrics.failureCount++;
+        consecutiveFailures++;
+        if (consecutiveFailures >= maxFailures) {
+          remaining = notes.slice(i + 1);
+          return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "consecutive_failures" };
+        }
+        // 导航回 /explore 恢复 SPA 状态
+        router.push({ path: "/explore" }).catch(function() {});
+        await sleep(2000);
+        continue;
+      }
+    } catch(e) {}
+
     var note = notes[i];
     var noteId = note.noteId || note.note_id;
     var xsecToken = note.xsecToken || note.xsec_token || "";
     var noteStartTime = Date.now();
     var elapsed = 0, error = null;
     var allComments = [];
+    var lastFetchError = null;
 
     if (Date.now() - startTime > timeBudgetMs) {
       remaining = notes.slice(i);
@@ -113,7 +146,7 @@ async function(args) {
       if (ns && ns.noteRequest && typeof ns.noteRequest.fetchComments === "function") {
         try {
           await withTimeout(ns.noteRequest.fetchComments.call(ns.noteRequest, noteId, ""), 6000, "fetchComments timed out");
-        } catch(e) {}
+        } catch(e) { lastFetchError = e.message; }
         // Short wait for the response to propagate to store
         await new Promise(function(r) { setTimeout(r, 800); });
       }
@@ -193,50 +226,7 @@ async function(args) {
                 pageOk = newList.length > 0;
                 if (!hasMore) break;
               }
-            } catch(e) { /* fall through */ }
-          }
-
-          // Strategy B: POST with timestamp-based x-t
-          if (!pageOk) {
-            try {
-              var xt = String(Date.now());
-              var resp = await withTimeout(fetch("https://www.xiaohongshu.com/api/sns/web/v2/comment/page", {
-                method: "POST", credentials: "include",
-                headers: {
-                  "content-type": "application/json;charset=UTF-8",
-                  "x-t": xt,
-                  "origin": "https://www.xiaohongshu.com",
-                  "referer": "https://www.xiaohongshu.com/explore/" + noteId
-                },
-                body: JSON.stringify({ note_id: noteId, cursor: cursor, page: page, xsec_token: xsecToken })
-              }), 8000, "POST timeout");
-              if (resp.ok) {
-                var json = await resp.json();
-                if (json.success && json.data) {
-                  var items = json.data.comments || json.data.items || [];
-                  var existingIds2 = {};
-                  for (var ei2 = 0; ei2 < allComments.length; ei2++) existingIds2[allComments[ei2].id] = true;
-                  for (var ni2 = 0; ni2 < items.length; ni2++) {
-                    if (!existingIds2[items[ni2].id]) {
-                      var nc2 = items[ni2];
-                      allComments.push({
-                        id: nc2.id, content: nc2.content || nc2.text || null,
-                        like_count: Number(nc2.likeCount ?? nc2.like_count ?? nc2.likes) ?? null,
-                        created_time: nc2.createTime ?? nc2.create_time ?? nc2.time ?? null,
-                        ip_location: nc2.ipLocation ?? nc2.ip_location ?? null,
-                        user: normalizeUser(nc2.userInfo ?? nc2.user_info ?? nc2.user ?? {}),
-                        sub_comment_count: Number(nc2.subCommentCount ?? nc2.sub_comment_count) ?? 0,
-                        target_comment_id: nc2.targetCommentId ?? nc2.target_comment_id ?? null
-                      });
-                    }
-                  }
-                  pageOk = items.length > 0;
-                  hasMore = json.data.hasMore || false;
-                  cursor = json.data.cursor || "";
-                  if (!hasMore) break;
-                }
-              }
-            } catch(e) { /* page 2+ failure is non-fatal */ }
+            } catch(e) { lastFetchError = e.message; }
           }
 
           if (!pageOk) break;
@@ -250,7 +240,7 @@ async function(args) {
       }
 
       elapsed = Date.now() - noteStartTime;
-      if (allComments.length === 0 && !error) error = "No comments found via store";
+      if (allComments.length === 0 && !error) error = "No comments found via store" + (lastFetchError ? " (last error: " + lastFetchError + ")" : "");
 
     } catch (err) {
       elapsed = Date.now() - noteStartTime;
