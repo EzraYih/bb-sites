@@ -195,13 +195,18 @@ async function(args) {
 
   // Wait for SPA to be ready before processing notes (use a generous timeout
   // separate from singleNoteTimeoutMs, since this is a one-time init check)
-  const appReady = await helper.waitFor(
-    () => helper.getApp(),
-    8000,
-    250
-  );
+  // 阶段 1：首次等待（8s，正常情况零额外开销）
+  let appReady = await helper.waitFor(() => helper.getApp(), 8000, 250);
+
+  // 阶段 2：未就绪则主动重新导航 + 延长等待（12s）
   if (!appReady) {
-    return { error: "Vue app not found", hint: "Ensure xiaohongshu.com is fully loaded" };
+    try { location.href = 'https://www.xiaohongshu.com/explore'; } catch {}
+    await helper.sleep(3000);
+    appReady = await helper.waitFor(() => helper.getApp(), 12000, 500);
+  }
+
+  if (!appReady) {
+    return { error: "Vue app not found", hint: "SPA failed to initialize after retry" };
   }
 
 
