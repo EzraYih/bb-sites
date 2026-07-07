@@ -114,6 +114,17 @@ async function(args) {
     return { sleep, getStore, getRouter, waitFor, fetchViaSPA, extractDetail };
   })());
 
+  // SPA 两阶段自愈（与 notes-batch.js 一致）
+  var appReady = await helper.waitFor(function() { return helper.getStore("user"); }, 8000, 300);
+  if (!appReady) {
+    try { location.href = 'https://www.xiaohongshu.com/explore'; } catch(e) {}
+    await helper.sleep(3000);
+    appReady = await helper.waitFor(function() { return helper.getStore("user"); }, 12000, 500);
+  }
+  if (!appReady) {
+    return { error: "SPA not ready", hint: "User store not available after retry" };
+  }
+
   var userStore = helper.getStore("user");
   if (userStore && !userStore.loggedIn) {
     return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore and log in manually" };
