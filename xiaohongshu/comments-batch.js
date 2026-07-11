@@ -66,22 +66,33 @@ async function(args) {
     avgElapsedMs: 0, maxElapsedMs: 0, slowNotes: 0, totalCommentCount: 0
   };
 
+  // ── SPA 就绪等待 ──
+  // prepareDetailTab 已确认 SPA 就绪。此处失败说明 SPA 在批次执行期间崩溃。
+  // 不执行 location.href 自愈 — 整页导航会摧毁 CDP 执行上下文。
+  // 直接返回错误，由工作流层降级并发并整批回退。
+  var appReady = await waitFor(function() { return getApp(); }, 8000, 250);
+  if (!appReady) return {
+    error: "Vue app not found",
+    hint: "SPA became unavailable during batch execution",
+    stopped_reason: "spa_not_ready"
+  };
+
   var router = getRouter();
   if (!router) return { error: "Router not available: page not fully loaded" };
 
   for (var i = 0; i < notes.length; i++) {
-    // ── 300013 会话级安全限制检测 ──
-    try {
-      var bodyText = document.body?.innerText || "";
-      if (/300013|安全限制/.test(bodyText)) {
-        remaining = notes.slice(i);
-        return {
-          collected: collected, failures: failures, remaining: remaining,
-          metrics: metrics, stopped_reason: "consecutive_failures",
-          hint: "platform limit (300013) detected"
-        };
-      }
-    } catch(e) {}
+  // ── 300013/300017 会话级安全限制检测 ──
+  try {
+    var bodyText = document.body?.innerText || "";
+    if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
+      remaining = notes.slice(i);
+      return {
+        collected: collected, failures: failures, remaining: remaining,
+        metrics: metrics, stopped_reason: "consecutive_failures",
+        hint: "platform limit (300013/300017) detected"
+      };
+    }
+  } catch(e) {}
 
     // ── 300031/404 单笔记不可访问检测 ──
     try {

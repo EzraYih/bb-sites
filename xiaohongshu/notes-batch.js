@@ -193,20 +193,18 @@ async function(args) {
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
   const collectComments = args.collect_comments === true || args.collect_comments === "true";
 
-  // Wait for SPA to be ready before processing notes (use a generous timeout
-  // separate from singleNoteTimeoutMs, since this is a one-time init check)
-  // 阶段 1：首次等待（8s，正常情况零额外开销）
+  // Wait for SPA to be ready before processing notes.
+  // prepareDetailTab 已确认 SPA 就绪。此处失败说明 SPA 在批次执行期间崩溃。
+  // 不执行 location.href 自愈 — 整页导航会摧毁 CDP 执行上下文。
+  // 直接返回错误，由工作流层降级并发并整批回退。
   let appReady = await helper.waitFor(() => helper.getApp(), 8000, 250);
 
-  // 阶段 2：未就绪则主动重新导航 + 延长等待（12s）
   if (!appReady) {
-    try { location.href = 'https://www.xiaohongshu.com/explore'; } catch {}
-    await helper.sleep(3000);
-    appReady = await helper.waitFor(() => helper.getApp(), 12000, 500);
-  }
-
-  if (!appReady) {
-    return { error: "Vue app not found", hint: "SPA failed to initialize after retry" };
+    return {
+      error: "Vue app not found",
+      hint: "SPA became unavailable during batch execution",
+      stopped_reason: "spa_not_ready"
+    };
   }
 
 
@@ -238,14 +236,14 @@ async function(args) {
       break;
     }
 
-    // Pre-check for 300013 platform limit
+    // Pre-check for 300013/300017 platform limit
     try {
       const bodyText = document.body?.innerText || "";
-      if (/300013|安全限制/.test(bodyText)) {
+      if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
         const refNoteId = notes[i].noteId || notes[i].note_id || "unknown";
         failures.push({
           note_id: refNoteId,
-          error: "[300013] platform limit",
+          error: "[300013/300017] platform limit",
           elapsed_ms: 0
         });
         metrics.failureCount++;
@@ -253,7 +251,7 @@ async function(args) {
         return {
           collected, failures, remaining, metrics,
           stopped_reason: "consecutive_failures",
-          hint: "platform limit (300013) detected"
+          hint: "platform limit (300013/300017) detected"
         };
       }
     } catch {}
@@ -365,9 +363,9 @@ async function(args) {
       error = err.message;
       try {
         const bodyText = document.body?.innerText || "";
-        if (/300013|安全限制/.test(bodyText)) {
-          error = "[300013] " + (error || "安全限制");
-        }
+if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
+  error = "[300013/300017] " + (error || "安全限制");
+}
       } catch {}
     }
     // Layer 3: Performance monitoring
