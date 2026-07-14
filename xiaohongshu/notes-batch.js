@@ -256,34 +256,6 @@ async function(args) {
       }
     } catch {}
 
-    // Pre-check for 300031 per-note unavailable (404 page)
-    try {
-      const currentUrl = String(location.href || "");
-      if (currentUrl.indexOf("/404") >= 0 || /error_code=300031/.test(currentUrl)) {
-        const failedNoteId = notes[i].noteId || notes[i].note_id || "unknown";
-        failures.push({
-          note_id: failedNoteId,
-          error: "[300031] note unavailable",
-          elapsed_ms: 0
-        });
-        metrics.failureCount++;
-        consecutiveFailures++;
-        if (consecutiveFailures >= maxFailures) {
-          remaining = notes.slice(i + 1);
-          return {
-            collected, failures, remaining, metrics,
-            stopped_reason: "consecutive_failures",
-            hint: `${maxFailures} consecutive 300031 failures`
-          };
-        }
-        // 导航回 /explore 恢复 SPA
-        const router = helper.getRouter();
-        if (router) router.push({ path: "/explore" }).catch(() => {});
-        await helper.sleep(2000);
-        continue;
-      }
-    } catch {}
-
     const { noteId, xsecToken } = notes[i];
     let error = null;
     let detail = null;
@@ -304,6 +276,25 @@ async function(args) {
         }).catch(() => {});
         await helper.sleep(1800);
       }
+
+      // ── 300031 早期检测（router.push 后，API 调用前）──
+      try {
+        const navUrl = String(location.href || "");
+        if (navUrl.indexOf("/404") >= 0 || /error_code=300031/.test(navUrl)) {
+          failures.push({ note_id: noteId, error: "[300031] note unavailable", elapsed_ms: Date.now() - noteStartTime });
+          metrics.failureCount++;
+          consecutiveFailures++;
+          if (consecutiveFailures >= maxFailures) {
+            remaining = notes.slice(i + 1);
+            return { collected, failures, remaining, metrics, stopped_reason: "consecutive_failures", hint: `${maxFailures} consecutive 300031 failures` };
+          }
+          const r = helper.getRouter();
+          if (r) r.push({ path: "/explore" }).catch(() => {});
+          await helper.sleep(2000);
+          continue;
+        }
+      } catch {}
+
       // Trigger API fetch via noteStore (matches feed.js pattern)
       const ns = helper.getStore("note");
       if (ns) {
