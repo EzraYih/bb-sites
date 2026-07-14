@@ -94,25 +94,6 @@ async function(args) {
     }
   } catch(e) {}
 
-    // ── 300031/404 单笔记不可访问检测 ──
-    try {
-      var currentUrl = String(location.href || "");
-      if (currentUrl.indexOf("/404") >= 0 || /error_code=300031/.test(currentUrl)) {
-        var failedNoteId = notes[i].noteId || notes[i].note_id || "unknown";
-        failures.push({ note_id: failedNoteId, error: "[300031] note unavailable", elapsed_ms: 0 });
-        metrics.failureCount++;
-        consecutiveFailures++;
-        if (consecutiveFailures >= maxFailures) {
-          remaining = notes.slice(i + 1);
-          return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "consecutive_failures" };
-        }
-        // 导航回 /explore 恢复 SPA 状态
-        router.push({ path: "/explore" }).catch(function() {});
-        await sleep(2000);
-        continue;
-      }
-    } catch(e) {}
-
     var note = notes[i];
     var noteId = note.noteId || note.note_id;
     var xsecToken = note.xsecToken || note.xsec_token || "";
@@ -142,6 +123,25 @@ async function(args) {
         return false;
       }, 2000, 200);
       // If the condition wasn't met within 2s, we proceed anyway (same timing as before)
+
+      // ── 300031 早期检测（router.push 后，API 调用前）──
+      // 300031 由 SPA 客户端路由触发，router.push 后 ~500ms URL 变为 /404?error_code=300031
+      // 此时 CDP eval 上下文存活，可检测。检测到后标记当前笔记失效，不调用 API。
+      try {
+        var navUrl = String(location.href || "");
+        if (navUrl.indexOf("/404") >= 0 || /error_code=300031/.test(navUrl)) {
+          failures.push({ note_id: noteId, error: "[300031] note unavailable", elapsed_ms: Date.now() - noteStartTime });
+          metrics.failureCount++;
+          consecutiveFailures++;
+          if (consecutiveFailures >= maxFailures) {
+            remaining = notes.slice(i + 1);
+            return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "consecutive_failures" };
+          }
+          router.push({ path: "/explore" }).catch(function() {});
+          await sleep(2000);
+          continue;
+        }
+      } catch(e) {}
 
       var ns = getStore("note");
 
