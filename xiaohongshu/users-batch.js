@@ -190,23 +190,6 @@ async function(args) {
       }
     } catch(e) {}
 
-    // ── 300031/404 单用户不可访问检测 ──
-    try {
-      var currentUrl = String(location.href || "");
-      if (currentUrl.indexOf("/404") >= 0 || /error_code=300031/.test(currentUrl)) {
-        failures.push({ user_id: users[i].userId, error: "[300031/404] page unavailable", elapsed_ms: 0 });
-        consecutiveFailures++;
-        if (consecutiveFailures >= maxFailures) {
-          remaining = users.slice(i + 1);
-          break;
-        }
-        var router = helper.getRouter();
-        if (router) router.push({ path: "/explore" }).catch(function() {});
-        await helper.sleep(2000);
-        continue;
-      }
-    } catch(e) {}
-
     var user = users[i];
     var userStart = Date.now();
     var error = null;
@@ -220,6 +203,25 @@ async function(args) {
     } catch (spaErr) {
       error = "spa:" + (spaErr.message || "?");
     }
+
+    // ── 300031 早期检测（fetchViaSPA 后）──
+    // users-batch 的 fetchViaSPA 封装了 router.push + waitFor，无法在导航后 API 前插入检测。
+    // 300031 触发后 fetchViaSPA 因 waitFor 超时抛出错误，此处检测 URL 覆盖 error。
+    try {
+      var navUrl = String(location.href || "");
+      if (navUrl.indexOf("/404") >= 0 || /error_code=300031/.test(navUrl)) {
+        failures.push({ user_id: user.userId, error: "[300031] user page unavailable", elapsed_ms: Date.now() - userStart });
+        consecutiveFailures++;
+        if (consecutiveFailures >= maxFailures) {
+          remaining = users.slice(i + 1);
+          break;
+        }
+        var r = helper.getRouter();
+        if (r) r.push({ path: "/explore" }).catch(function() {});
+        await helper.sleep(2000);
+        continue;
+      }
+    } catch(e) {}
 
     var userElapsed = Date.now() - userStart;
     if (userElapsed > maxElapsedMs) maxElapsedMs = userElapsed;
