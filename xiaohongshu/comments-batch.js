@@ -114,6 +114,19 @@ async function(args) {
         query: { xsec_token: xsecToken || '', xsec_source: '' }
       }).catch(function() {});
 
+      // 阶段性 progress 事件：router.push 已调用
+      try {
+        console.log(JSON.stringify({__bb_progress: {
+          done: i,
+          total: notes.length,
+          noteId: noteId,
+          success: null,
+          error: null,
+          stage: "router_pushed",
+          currentUrl: String(location.href || "")
+        }}));
+      } catch(e) {}
+
       // Level 1: Wait for route change OR store to start loading (max 2000ms)
       // Instead of blind sleep(2000), we condition-wait and exit early.
       await waitFor(function() {
@@ -155,6 +168,18 @@ async function(args) {
       // Bypasses heavy getNoteDetailByNoteId() which loads full note detail (images, author, etc).
       // fetchComments() returns comments data into noteDetailMap[noteId].comments within ~1s.
       if (ns && ns.noteRequest && typeof ns.noteRequest.fetchComments === "function") {
+        // 阶段性 progress 事件：正在调用 fetchComments API
+        try {
+          console.log(JSON.stringify({__bb_progress: {
+            done: i,
+            total: notes.length,
+            noteId: noteId,
+            success: null,
+            error: null,
+            stage: "fetch_comments",
+            currentUrl: String(location.href || "")
+          }}));
+        } catch(e) {}
         try {
           await withTimeout(ns.noteRequest.fetchComments.call(ns.noteRequest, noteId, ""), 6000, "fetchComments timed out");
         } catch(e) { lastFetchError = e.message; }
@@ -162,6 +187,18 @@ async function(args) {
         await new Promise(function(r) { setTimeout(r, 800); });
       }
       // Wait for comments data in store (fetchComments() populates noteDetailMap[noteId].comments)
+      // 阶段性 progress 事件：等待 store 数据就绪
+      try {
+        console.log(JSON.stringify({__bb_progress: {
+          done: i,
+          total: notes.length,
+          noteId: noteId,
+          success: null,
+          error: null,
+          stage: "wait_store",
+          currentUrl: String(location.href || "")
+        }}));
+      } catch(e) {}
       var detail = await waitFor(function() {
         var current = getStore("note")?.noteDetailMap?.[noteId];
         if (!current || !current.comments) return null;
@@ -290,7 +327,9 @@ async function(args) {
         error: error || null,
         commentCount: allComments.length,
         collected: collected.length,
-        failures: failures.length
+        failures: failures.length,
+        currentUrl: String(location.href || ""),
+        stage: "note_complete"
       }}));
     } catch(e) {}
 

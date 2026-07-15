@@ -274,6 +274,20 @@ async function(args) {
           path: `/explore/${noteId}`,
           query: { xsec_token: xsecToken || "", xsec_source: "" }
         }).catch(() => {});
+
+        // 阶段性 progress 事件：router.push 已调用
+        try {
+          console.log(JSON.stringify({__bb_progress: {
+            done: i,
+            total: notes.length,
+            noteId: noteId,
+            success: null,
+            error: null,
+            stage: "router_pushed",
+            currentUrl: String(location.href || "")
+          }}));
+        } catch(e) {}
+
         await helper.sleep(1800);
       }
 
@@ -298,6 +312,18 @@ async function(args) {
       // Trigger API fetch via noteStore (matches feed.js pattern)
       const ns = helper.getStore("note");
       if (ns) {
+        // 阶段性 progress 事件：正在调用 API
+        try {
+          console.log(JSON.stringify({__bb_progress: {
+            done: i,
+            total: notes.length,
+            noteId: noteId,
+            success: null,
+            error: null,
+            stage: "fetch_detail",
+            currentUrl: String(location.href || "")
+          }}));
+        } catch(e) {}
         if (ns.setCurrentNoteId) ns.setCurrentNoteId(noteId);
         if (ns.getNoteDetailByNoteId) {
           try {
@@ -483,7 +509,9 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
         success: !!detail && !!detail.note,
         error: error || null,
         collected: collected.length,
-        failures: failures.length
+        failures: failures.length,
+        currentUrl: String(location.href || ""),
+        stage: "note_complete"
       }}));
     } catch(e) {}
 

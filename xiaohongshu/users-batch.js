@@ -117,7 +117,7 @@ async function(args) {
   // SPA 两阶段自愈（与 notes-batch.js 一致）
   var appReady = await helper.waitFor(function() { return helper.getStore("user"); }, 8000, 300);
   if (!appReady) {
-    try { location.href = 'https://www.xiaohongshu.com/explore'; } catch(e) {}
+    try { var r = helper.getRouter(); if (r) r.push({ path: "/explore" }); } catch(e) {}
     await helper.sleep(3000);
     appReady = await helper.waitFor(function() { return helper.getStore("user"); }, 12000, 500);
   }
@@ -198,6 +198,18 @@ async function(args) {
     // ── SPA navigation + Pinia store (唯一方法) ──
     // Uses router.push so requests carry proper x-s/x-t signatures and Referer
     try {
+      // 阶段性 progress 事件：开始获取用户资料
+      try {
+        console.log(JSON.stringify({__bb_progress: {
+          done: i,
+          total: users.length,
+          userId: user.userId,
+          success: null,
+          error: null,
+          stage: "fetch_profile",
+          currentUrl: String(location.href || "")
+        }}));
+      } catch(e) {}
       var pageData = await helper.fetchViaSPA(user.userId, singleUserTimeoutMs);
       detail = helper.extractDetail(pageData, user.userId, parseNumericCount);
     } catch (spaErr) {
@@ -250,7 +262,9 @@ async function(args) {
         success: !!detail,
         error: error || null,
         collected: collected.length,
-        failures: failures.length
+        failures: failures.length,
+        currentUrl: String(location.href || ""),
+        stage: "user_complete"
       }}));
     } catch(e) {}
 
