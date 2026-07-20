@@ -113,8 +113,9 @@ async function(args) {
       }
       return { noteId, xsecToken };
     }
-    function buildNoteUrl(noteId, xsecToken) {
-      return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=`;
+    function buildNoteUrl(noteId, xsecToken, xsecSource) {
+      const source = xsecSource || "pc_search";
+      return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=${encodeURIComponent(source)}`;
     }
     function findTokenInCollection(items, noteId) {
       if (!Array.isArray(items)) return null;
@@ -158,11 +159,15 @@ async function(args) {
       await sleep(waitMs);
       return router.currentRoute?.value || null;
     }
-    async function openNoteAndWait(noteId, xsecToken, requireComments = false) {
+    async function openNoteAndWait(noteId, xsecToken, requireComments = false, xsecSource = "pc_search") {
       if (!noteId || !xsecToken) throw new Error("Missing note id or xsec token");
       const noteStore = getStore("note");
       if (!noteStore) throw new Error("Note store not found");
-      await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
+      await navigate(`/explore/${noteId}`, {
+        xsec_token: xsecToken,
+        xsec_source: xsecSource || "pc_search",
+        source: "web_explore_feed",
+      }, 1800);
       if (noteStore.setCurrentNoteId) noteStore.setCurrentNoteId(noteId);
       if (noteStore.getNoteDetailByNoteId) {
         try {

@@ -66,10 +66,11 @@ async function(args) {
       if (tokenMatch) xsecToken = tokenMatch[1];
       return { noteId, xsecToken };
     }
-    function buildNoteUrl(noteId, token) {
+    function buildNoteUrl(noteId, token, xsecSource) {
       if (!noteId) return null;
       if (!token) return `https://www.xiaohongshu.com/explore/${noteId}`;
-      return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(token)}&xsec_source=`;
+      const source = xsecSource || "pc_search";
+      return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(token)}&xsec_source=${encodeURIComponent(source)}`;
     }
     const tokenMemory = new Map();
     function rememberNoteTokens(items) {
@@ -256,7 +257,7 @@ async function(args) {
       }
     } catch {}
 
-    const { noteId, xsecToken } = notes[i];
+    const { noteId, xsecToken, xsecSource } = notes[i];
     let error = null;
     let detail = null;
     let noteStartTime = Date.now();
@@ -272,7 +273,11 @@ async function(args) {
       } else {
         router.push({
           path: `/explore/${noteId}`,
-          query: { xsec_token: xsecToken || "", xsec_source: "" }
+          query: {
+            xsec_token: xsecToken || "",
+            xsec_source: xsecSource || "pc_search",
+            source: "web_explore_feed",
+          }
         }).catch(() => {});
 
         // 阶段性 progress 事件：router.push 已调用
@@ -398,10 +403,11 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
       const resultItem = {
         note_id: noteId,
         xsec_token: token,
+        xsec_source: xsecSource || "pc_search",
         title: note.title ?? null,
         desc: note.desc ?? null,
         type: note.type ?? null,
-        url: token ? helper.buildNoteUrl(noteId, token) : `https://www.xiaohongshu.com/explore/${noteId}`,
+        url: token ? helper.buildNoteUrl(noteId, token, xsecSource) : `https://www.xiaohongshu.com/explore/${noteId}`,
         author: note.user?.nickname ?? null,
         author_id: note.user?.userId ?? note.user?.user_id ?? null,
         author_followers: note.user?.fans ?? null,

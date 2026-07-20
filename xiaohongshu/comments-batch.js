@@ -97,6 +97,7 @@ async function(args) {
     var note = notes[i];
     var noteId = note.noteId || note.note_id;
     var xsecToken = note.xsecToken || note.xsec_token || "";
+    var xsecSource = note.xsecSource || note.xsec_source || "pc_search";
     var noteStartTime = Date.now();
     var elapsed = 0, error = null;
     var allComments = [];
@@ -111,7 +112,11 @@ async function(args) {
       // Navigate to note page via SPA
       router.push({
         path: '/explore/' + noteId,
-        query: { xsec_token: xsecToken || '', xsec_source: '' }
+        query: {
+          xsec_token: xsecToken || '',
+          xsec_source: xsecSource || 'pc_search',
+          source: 'web_explore_feed',
+        }
       }).catch(function() {});
 
       // 阶段性 progress 事件：router.push 已调用

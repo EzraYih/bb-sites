@@ -164,20 +164,44 @@ async function(args) {
         url: userId ? `https://www.xiaohongshu.com/user/profile/${userId}` : null
       };
     }
+    function extractXsecSource(item) {
+      // Level 1: API 响应字段
+      const direct = item?.xsec_source ?? item?.xsecSource ?? null;
+      if (direct) return String(direct);
+      // Level 2: DOM <a> 标签 href 解析
+      if (typeof document !== "undefined") {
+        const noteId = item?.id ?? item?.noteCard?.noteId ?? item?.note_card?.note_id;
+        if (noteId) {
+          const anchor = document.querySelector('a[href*="/explore/' + noteId + '"]');
+          if (anchor) {
+            try {
+              const href = anchor.getAttribute("href") || anchor.href || "";
+              const url = new URL(href, location.origin);
+              const fromHref = url.searchParams.get("xsec_source");
+              if (fromHref) return fromHref;
+            } catch {}
+          }
+        }
+      }
+      // Level 3: 默认值
+      return "pc_search";
+    }
     function mapNoteCardItem(item) {
       const card = item?.noteCard || item?.note_card || item;
       if (!card || typeof card !== "object") return null;
       const noteId = item?.id ?? card.noteId ?? card.note_id ?? null;
       const xsecToken = item?.xsecToken ?? item?.xsec_token ?? card.xsecToken ?? card.xsec_token ?? null;
+      const xsecSource = extractXsecSource(item);
       const user = card.user || {};
       if (!noteId || !/^[a-f0-9]+$/i.test(String(noteId))) return null;
       return {
         note_id: noteId,
         xsec_token: xsecToken,
+        xsec_source: xsecSource,
         title: card.displayTitle ?? card.display_title ?? card.title ?? null,
         type: card.type ?? null,
         url: xsecToken
-          ? `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=`
+          ? `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=${encodeURIComponent(xsecSource)}`
           : `https://www.xiaohongshu.com/explore/${noteId}`,
         author: user.nickname ?? user.nickName ?? null,
         author_id: user.userId ?? user.user_id ?? null,
@@ -234,8 +258,9 @@ async function(args) {
       }
       return { noteId, xsecToken };
     }
-    function buildNoteUrl(noteId, xsecToken) {
-      return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=`;
+    function buildNoteUrl(noteId, xsecToken, xsecSource) {
+      const source = xsecSource || "pc_search";
+      return `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=${encodeURIComponent(source)}`;
     }
     function getTokenCache() {
       if (!globalThis.__bbBrowserXhsTokenCache) globalThis.__bbBrowserXhsTokenCache = {};
@@ -294,11 +319,15 @@ async function(args) {
       await sleep(waitMs);
       return router.currentRoute?.value || null;
     }
-    async function openNoteAndWait(noteId, xsecToken, requireComments = false) {
+    async function openNoteAndWait(noteId, xsecToken, requireComments = false, xsecSource = "pc_search") {
       if (!noteId || !xsecToken) throw new Error("Missing note id or xsec token");
       const noteStore = getStore("note");
       if (!noteStore) throw new Error("Note store not found");
-      await navigate(`/explore/${noteId}`, { xsec_token: xsecToken, xsec_source: "" }, 1800);
+      await navigate(`/explore/${noteId}`, {
+        xsec_token: xsecToken,
+        xsec_source: xsecSource || "pc_search",
+        source: "web_explore_feed",
+      }, 1800);
       if (noteStore.setCurrentNoteId) noteStore.setCurrentNoteId(noteId);
       if (noteStore.getNoteDetailByNoteId) {
         try {
@@ -460,6 +489,7 @@ async function(args) {
     let requestCount = 0;
     let jitterSleeps = 0;
     let jitterSleepMs = 0;
+    let diagnosticLogged = false;
     const roundDurations = [];
 
     async function waitForStoreToSettle(previousFeedsLength, previousPage) {
@@ -488,6 +518,20 @@ async function(args) {
         fn?.();
       } catch {}
       await helper.waitFor(() => captured, 12000, 200);
+      if (captured && !diagnosticLogged && Array.isArray(captured?.data?.items) && captured.data.items.length > 0) {
+        diagnosticLogged = true;
+        const firstItem = captured.data.items[0];
+        const itemKeys = Object.keys(firstItem || {});
+        const cardKeys = Object.keys(firstItem?.noteCard || firstItem?.note_card || {});
+        console.log(JSON.stringify({
+          __bb_diag: {
+            type: "search_api_fields",
+            item_keys: itemKeys,
+            card_keys: cardKeys,
+            has_xsec_source: itemKeys.includes("xsec_source") || itemKeys.includes("xsecSource"),
+          }
+        }));
+      }
       await waitForStoreToSettle(previousFeedsLength, previousPage);
       roundDurations.push(Date.now() - roundStartedAt);
       requestCount += 1;
