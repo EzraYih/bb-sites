@@ -7,7 +7,9 @@
     "max_pages": {"required": false, "description": "Max comment pages per note (default 3)"},
     "time_budget_ms": {"required": false, "description": "Max time for this batch (default 60000)"},
     "single_note_timeout_ms": {"required": false, "description": "Timeout for single note (default 15000)"},
-    "max_failures": {"required": false, "description": "Max consecutive failures before abort (default 3)"}
+    "max_failures": {"required": false, "description": "Max consecutive failures before abort (default 3)"},
+    "min_delay_ms": {"required": false, "description": "Min delay between notes (default 1000)"},
+    "max_delay_ms": {"required": false, "description": "Max delay between notes (default 2000)"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -25,6 +27,8 @@ async function(args) {
   var timeBudgetMs = args.time_budget_ms ?? 60000;
   var singleNoteTimeoutMs = args.single_note_timeout_ms ?? 15000;
   var maxFailures = args.max_failures ?? 3;
+  var minDelayMs = Number(args.min_delay_ms) || 1000;
+  var maxDelayMs = Number(args.max_delay_ms) || 2000;
 
   function sleep(ms) { return new Promise(function(resolve) { setTimeout(resolve, ms); }); }
   function withTimeout(promise, ms, msg) {
@@ -338,7 +342,7 @@ async function(args) {
       }}));
     } catch(e) {}
 
-    if (i < notes.length - 1) await sleep(1000 + Math.random() * 1000);
+    if (i < notes.length - 1) await sleep(minDelayMs + Math.random() * (maxDelayMs - minDelayMs));
   }
 
   metrics.avgElapsedMs = metrics.successCount > 0 ? Math.round(metrics.totalCommentCount) : 0;
