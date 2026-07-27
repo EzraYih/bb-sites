@@ -243,6 +243,9 @@ async function(args) {
       collected.push(detail);
       consecutiveFailures = 0;
       totalElapsed += userElapsed;
+
+      // 对称衰减：撤销之前的失败增长
+      baseDelayMs = Math.max(baseDelayMs / 1.3, minDelayMs);
     } else {
       failures.push({ user_id: user.userId, error: error, elapsed_ms: userElapsed });
       consecutiveFailures++;
