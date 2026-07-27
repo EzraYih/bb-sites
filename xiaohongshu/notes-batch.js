@@ -192,6 +192,7 @@ async function(args) {
   const maxFailures = Number(args.max_failures) || 3;
   const minDelayMs = Number(args.external_min_delay_ms) || Number(args.min_delay_ms) || 600;
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
+  const initialSingleNoteTimeoutMs = singleNoteTimeoutMs;
   const collectComments = args.collect_comments === true || args.collect_comments === "true";
 
   // Wait for SPA to be ready before processing notes.
@@ -465,6 +466,9 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
       totalElapsed += elapsed;
       consecutiveFailures = 0;
 
+      // 对称衰减：撤销之前的失败增长
+      baseDelayMs = Math.max(baseDelayMs / 1.3, minDelayMs);
+
       // Response time monitoring
       if (elapsed > 5000) {
         consecutiveSlowNotes++;
@@ -475,6 +479,11 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
         }
       } else {
         consecutiveSlowNotes = 0;
+        // 对称恢复：撤销之前的慢笔记缩减
+        singleNoteTimeoutMs = Math.min(
+          Math.round(singleNoteTimeoutMs / 0.8),
+          initialSingleNoteTimeoutMs
+        );
       }
 
     } else {
