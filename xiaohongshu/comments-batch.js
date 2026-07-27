@@ -64,6 +64,7 @@ async function(args) {
   var startTime = Date.now();
   var collected = [], failures = [], remaining = [];
   var consecutiveFailures = 0;
+  var baseDelayMs = minDelayMs;
 
   var metrics = {
     totalNotes: notes.length, successCount: 0, failureCount: 0,
@@ -310,6 +311,8 @@ async function(args) {
       failures.push({ note_id: noteId, error: error || "Unknown error", elapsed_ms: elapsed });
       metrics.failureCount++;
       consecutiveFailures++;
+      // 对称增长：失败后退避
+      baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
       if (consecutiveFailures >= maxFailures) {
         remaining = notes.slice(i + 1);
         return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "consecutive_failures" };
@@ -322,6 +325,8 @@ async function(args) {
       });
       metrics.successCount++;
       consecutiveFailures = 0;
+      // 对称衰减：撤销之前的失败增长
+      baseDelayMs = Math.max(baseDelayMs / 1.3, minDelayMs);
       metrics.totalCommentCount += allComments.length;
       if (elapsed > 10000) metrics.slowNotes++;
     }
@@ -342,7 +347,10 @@ async function(args) {
       }}));
     } catch(e) {}
 
-    if (i < notes.length - 1) await sleep(minDelayMs + Math.random() * (maxDelayMs - minDelayMs));
+    if (i < notes.length - 1) {
+      var jitter = Math.random() * baseDelayMs * 0.3;
+      await sleep(baseDelayMs + jitter);
+    }
   }
 
   metrics.avgElapsedMs = metrics.successCount > 0 ? Math.round(metrics.totalCommentCount) : 0;
