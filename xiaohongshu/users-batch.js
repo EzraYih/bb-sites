@@ -5,7 +5,6 @@
   "domain": "www.xiaohongshu.com",
   "args": {
     "users": {"required": true, "description": "JSON array of {userId}"},
-    "time_budget_ms": {"required": false, "description": "Max time for this batch"},
     "single_user_timeout_ms": {"required": false, "description": "Timeout per user fetch"},
     "max_failures": {"required": false, "description": "Max consecutive failures before abort"},
     "min_delay_ms": {"required": false, "description": "Min delay between users"},
@@ -140,7 +139,6 @@ async function(args) {
     return { error: "Invalid argument: users must be a non-empty array" };
   }
 
-  var timeBudgetMs = Math.max(0, Number(args.time_budget_ms || 0) || 60000);
   var maxFailures = Math.max(1, Number(args.max_failures || 0) || 3);
   var minDelayMs = Math.max(0, Number(args.min_delay_ms || 0) || 2000);
   var maxDelayMs = Math.max(minDelayMs, Number(args.max_delay_ms || 0) || 4000);
@@ -161,16 +159,12 @@ async function(args) {
   var failures = [];
   var startedAt = Date.now();
   var consecutiveFailures = 0;
-  var baseDelayMs = minDelayMs;
+  const baseDelayMs = minDelayMs;
   var totalElapsed = 0;
   var maxElapsedMs = 0;
   var remaining = [];
 
   for (var i = 0; i < users.length; i++) {
-    if (timeBudgetMs > 0 && Date.now() - startedAt >= timeBudgetMs) {
-      remaining = users.slice(i);
-      break;
-    }
 
     // ── 300013 会话级安全限制检测 ──
     try {
@@ -243,13 +237,9 @@ async function(args) {
       collected.push(detail);
       consecutiveFailures = 0;
       totalElapsed += userElapsed;
-
-      // 对称衰减：撤销之前的失败增长
-      baseDelayMs = Math.max(baseDelayMs / 1.3, minDelayMs);
     } else {
       failures.push({ user_id: user.userId, error: error, elapsed_ms: userElapsed });
       consecutiveFailures++;
-      baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
       if (consecutiveFailures >= maxFailures) {
         remaining = users.slice(i + 1);
         break;
@@ -290,9 +280,7 @@ async function(args) {
       maxElapsedMs: maxElapsedMs,
       slowNotes: collected.filter(function(d) { return d._diagnostics.elapsed_ms > 5000; }).length
     },
-    stopped_reason: remaining.length > 0
-      ? "time_budget_exceeded"
-      : consecutiveFailures >= maxFailures ? "consecutive_failures" : "completed"
+    stopped_reason: consecutiveFailures >= maxFailures ? "consecutive_failures" : "completed"
   };
 }
 

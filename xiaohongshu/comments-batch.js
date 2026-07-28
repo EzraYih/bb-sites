@@ -5,7 +5,6 @@
   "args": {
     "notes": {"required": true, "description": "JSON array of {noteId, xsecToken}"},
     "max_pages": {"required": false, "description": "Max comment pages per note (default 3)"},
-    "time_budget_ms": {"required": false, "description": "Max time for this batch (default 60000)"},
     "single_note_timeout_ms": {"required": false, "description": "Timeout for single note (default 15000)"},
     "max_failures": {"required": false, "description": "Max consecutive failures before abort (default 3)"},
     "min_delay_ms": {"required": false, "description": "Min delay between notes (default 1000)"},
@@ -24,7 +23,6 @@ async function(args) {
   if (!Array.isArray(notes)) return { error: "notes must be an array" };
 
   var maxPages = args.max_pages ?? 3;
-  var timeBudgetMs = args.time_budget_ms ?? 60000;
   var singleNoteTimeoutMs = args.single_note_timeout_ms ?? 15000;
   var maxFailures = args.max_failures ?? 3;
   var minDelayMs = Number(args.min_delay_ms) || 1000;
@@ -61,10 +59,9 @@ async function(args) {
     };
   }
 
-  var startTime = Date.now();
   var collected = [], failures = [], remaining = [];
   var consecutiveFailures = 0;
-  var baseDelayMs = minDelayMs;
+  const baseDelayMs = minDelayMs;
 
   var metrics = {
     totalNotes: notes.length, successCount: 0, failureCount: 0,
@@ -107,11 +104,6 @@ async function(args) {
     var elapsed = 0, error = null;
     var allComments = [];
     var lastFetchError = null;
-
-    if (Date.now() - startTime > timeBudgetMs) {
-      remaining = notes.slice(i);
-      return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "time_budget_exceeded" };
-    }
 
     try {
       // Navigate to note page via SPA
@@ -248,7 +240,6 @@ async function(args) {
       // ── Pages 2+: try SPA API service first, fall back to POST ──
       if (hasMore && maxPages > 1) {
         for (var page = 2; page <= maxPages; page++) {
-          if (Date.now() - startTime > timeBudgetMs) break;
           var pageOk = false;
 
           // Strategy A: fetch next page via direct API call with cursor
@@ -311,8 +302,6 @@ async function(args) {
       failures.push({ note_id: noteId, error: error || "Unknown error", elapsed_ms: elapsed });
       metrics.failureCount++;
       consecutiveFailures++;
-      // 对称增长：失败后退避
-      baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
       if (consecutiveFailures >= maxFailures) {
         remaining = notes.slice(i + 1);
         return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "consecutive_failures" };
@@ -325,8 +314,6 @@ async function(args) {
       });
       metrics.successCount++;
       consecutiveFailures = 0;
-      // 对称衰减：撤销之前的失败增长
-      baseDelayMs = Math.max(baseDelayMs / 1.3, minDelayMs);
       metrics.totalCommentCount += allComments.length;
       if (elapsed > 10000) metrics.slowNotes++;
     }
@@ -354,7 +341,7 @@ async function(args) {
   }
 
   metrics.avgElapsedMs = metrics.successCount > 0 ? Math.round(metrics.totalCommentCount) : 0;
-  return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: remaining.length > 0 ? "time_budget_exceeded" : "completed" };
+  return { collected: collected, failures: failures, remaining: remaining, metrics: metrics, stopped_reason: "completed" };
 }
 
 

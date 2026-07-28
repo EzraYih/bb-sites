@@ -4,7 +4,6 @@
   "domain": "www.xiaohongshu.com",
   "args": {
     "notes": {"required": true, "description": "JSON array of {noteId, xsecToken}"},
-    "time_budget_ms": {"required": false, "description": "Max time for this batch (default 60000)"},
     "single_note_timeout_ms": {"required": false, "description": "Timeout for single note (default 8000)"},
     "max_failures": {"required": false, "description": "Max consecutive failures before abort (default 3)"},
     "min_delay_ms": {"required": false, "description": "Min delay between notes (default 600)"},
@@ -187,12 +186,10 @@ async function(args) {
   }
 
   // Config
-  const timeBudgetMs = Number(args.time_budget_ms) || 60000;
-  let singleNoteTimeoutMs = Number(args.single_note_timeout_ms) || Number(args.singleNoteTimeoutMs) || 8000;
+  const singleNoteTimeoutMs = Number(args.single_note_timeout_ms) || Number(args.singleNoteTimeoutMs) || 8000;
   const maxFailures = Number(args.max_failures) || 3;
   const minDelayMs = Number(args.external_min_delay_ms) || Number(args.min_delay_ms) || 600;
   const maxDelayMs = Number(args.external_max_delay_ms) || Number(args.max_delay_ms) || 1200;
-  const initialSingleNoteTimeoutMs = singleNoteTimeoutMs;
   const collectComments = args.collect_comments === true || args.collect_comments === "true";
 
   // Wait for SPA to be ready before processing notes.
@@ -215,8 +212,7 @@ async function(args) {
   const failures = [];
   let remaining = [];
   let consecutiveFailures = 0;
-  let consecutiveSlowNotes = 0;
-  let baseDelayMs = minDelayMs;
+  const baseDelayMs = minDelayMs;
   let totalElapsed = 0;
 
   const metrics = {
@@ -231,13 +227,6 @@ async function(args) {
   let startTime = Date.now();
 
   for (let i = 0; i < notes.length; i++) {
-    // Check time budget
-    let elapsed = Date.now() - startTime;
-    if (elapsed >= timeBudgetMs) {
-      remaining = notes.slice(i);
-      break;
-    }
-
     // Pre-check for 300013/300017 platform limit
     try {
       const bodyText = document.body?.innerText || "";
@@ -261,6 +250,7 @@ async function(args) {
     const { noteId, xsecToken, xsecSource } = notes[i];
     let error = null;
     let detail = null;
+    let apiTimedOut = false;
     let noteStartTime = Date.now();
     let tNav = 0, tApi = 0, tDetail = 0, tComment = 0;
 
@@ -334,7 +324,12 @@ async function(args) {
         if (ns.getNoteDetailByNoteId) {
           try {
             await helper.withTimeout(ns.getNoteDetailByNoteId(noteId), 6000, "Note detail fetch timed out");
-          } catch {}
+          } catch {
+            // API 超时 — store 永远不会被填充，跳过 waitFor 避免浪费 singleNoteTimeoutMs
+            // 这保证 perNoteMs 不超过 Math.max(singleItemTimeoutMs, API_CALL_TIMEOUT_MS) + NAV_OVERHEAD_MS
+            // 即 tabBudgetMs 公式假设成立
+            apiTimedOut = true;
+          }
         }
         // Ensure comment placeholder does not short-circuit waitFor
         if (collectComments) {
@@ -345,36 +340,47 @@ async function(args) {
       }
       tNav = Date.now() - noteStartTime;
       if (!error) {
-        // Layer 2: Wait for store response
-        await helper.sleep(200);
-        tApi = Date.now() - noteStartTime;
-
-        // Layer 3: Single waitFor for note detail + optional comments (feed.js pattern)
-        let current = await helper.waitFor(
-          () => {
-            const nd = helper.findNoteInDetailMap(noteId);
-            if (!nd?.note) return null;
-            if (!collectComments) return nd;
-            // Wait for first-page comments loaded by SPA
-            const cm = nd.comments;
-            if (cm?.list?.length > 0) return nd;
-            return null;
-          },
-          collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs
-        );
-        tDetail = Date.now() - noteStartTime;
-
-        // Record comment timing if applicable
-        if (current && current.comments?.list) {
-          tComment = Date.now() - noteStartTime;
-        }
-        if (tComment === 0) tComment = Date.now() - noteStartTime;
-
-        // Handle timeout scenario with meaningful error message
-        if (!current) {
-          error = "Note " + noteId + " timed out after " + (collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs) + "ms";
+        if (apiTimedOut) {
+          // API fetch 超时 — store 永远不会被填充，跳过 waitFor。
+          // 避免浪费 singleNoteTimeoutMs (8s) 在注定 null 的轮询上。
+          // 单条耗时: 1800(nav) + 6000(API timeout) + 200(sleep) ≈ 8000ms
+          // 符合 tabBudgetMs 公式: Math.max(8000, 6000) + 2000 = 10000ms
+          tApi = Date.now() - noteStartTime;
+          tDetail = tApi;
+          tComment = tApi;
+          error = "Note " + noteId + " API fetch timed out after 6000ms";
         } else {
-          detail = helper.toPlain(current);
+          // Layer 2: Wait for store response
+          await helper.sleep(200);
+          tApi = Date.now() - noteStartTime;
+
+          // Layer 3: Single waitFor for note detail + optional comments (feed.js pattern)
+          let current = await helper.waitFor(
+            () => {
+              const nd = helper.findNoteInDetailMap(noteId);
+              if (!nd?.note) return null;
+              if (!collectComments) return nd;
+              // Wait for first-page comments loaded by SPA
+              const cm = nd.comments;
+              if (cm?.list?.length > 0) return nd;
+              return null;
+            },
+            collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs
+          );
+          tDetail = Date.now() - noteStartTime;
+
+          // Record comment timing if applicable
+          if (current && current.comments?.list) {
+            tComment = Date.now() - noteStartTime;
+          }
+          if (tComment === 0) tComment = Date.now() - noteStartTime;
+
+          // Handle timeout scenario with meaningful error message
+          if (!current) {
+            error = "Note " + noteId + " timed out after " + (collectComments ? singleNoteTimeoutMs + 4000 : singleNoteTimeoutMs) + "ms";
+          } else {
+            detail = helper.toPlain(current);
+          }
         }
 
 
@@ -466,24 +472,9 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
       totalElapsed += elapsed;
       consecutiveFailures = 0;
 
-      // 对称衰减：撤销之前的失败增长
-      baseDelayMs = Math.max(baseDelayMs / 1.3, minDelayMs);
-
       // Response time monitoring
       if (elapsed > 5000) {
-        consecutiveSlowNotes++;
         metrics.slowNotes++;
-        if (consecutiveSlowNotes >= 2) {
-          baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
-          singleNoteTimeoutMs = Math.max(2000, Math.round(singleNoteTimeoutMs * 0.8));
-        }
-      } else {
-        consecutiveSlowNotes = 0;
-        // 对称恢复：撤销之前的慢笔记缩减
-        singleNoteTimeoutMs = Math.min(
-          Math.round(singleNoteTimeoutMs / 0.8),
-          initialSingleNoteTimeoutMs
-        );
       }
 
     } else {
@@ -496,7 +487,6 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
 
       metrics.failureCount++;
       consecutiveFailures++;
-      consecutiveSlowNotes++;
 
       // Layer 4: Consecutive failure protection
       if (consecutiveFailures >= maxFailures) {
@@ -510,9 +500,6 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
           hint: `${maxFailures} consecutive failures detected, possible rate limiting`
         };
       }
-
-      // Increase delay after failure
-      baseDelayMs = Math.min(baseDelayMs * 1.3, maxDelayMs * 2);
     }
 
     // Emit progress for streaming consumers (bb-browser --progress polls console)
@@ -547,7 +534,7 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
     failures,
     remaining,
     metrics,
-    stopped_reason: remaining.length > 0 ? "time_budget_exceeded" : "completed"
+    stopped_reason: "completed"
   };
 }
 
