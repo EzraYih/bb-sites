@@ -160,35 +160,23 @@ async function(args) {
 
       var ns = getStore("note");
 
-      // ── Clear stale cache entry to force fresh fetch ──
-      if (ns && ns.noteDetailMap) {
-        delete ns.noteDetailMap[noteId];
-        try { if (ns.setCurrentNoteId) ns.setCurrentNoteId(noteId); } catch(e) {}
-      }
-
-      // Direct comment API call via SPA signed request layer.
-      // Bypasses heavy getNoteDetailByNoteId() which loads full note detail (images, author, etc).
-      // fetchComments() returns comments data into noteDetailMap[noteId].comments within ~1s.
-      if (ns && ns.noteRequest && typeof ns.noteRequest.fetchComments === "function") {
-        // 阶段性 progress 事件：正在调用 fetchComments API
-        try {
-          console.log(JSON.stringify({__bb_progress: {
-            done: i,
-            total: notes.length,
-            noteId: noteId,
-            success: null,
-            error: null,
-            stage: "fetch_comments",
-            currentUrl: String(location.href || "")
-          }}));
-        } catch(e) {}
-        try {
-          await withTimeout(ns.noteRequest.fetchComments.call(ns.noteRequest, noteId, ""), 6000, "fetchComments timed out");
-        } catch(e) { lastFetchError = e.message; }
-        // Short wait for the response to propagate to store
-        await new Promise(function(r) { setTimeout(r, 800); });
-      }
-      // Wait for comments data in store (fetchComments() populates noteDetailMap[noteId].comments)
+      // ── Source A: Reuse comments from getNoteDetailByNoteId ──
+      // router.push triggered getNoteDetailByNoteId which populates noteDetailMap[noteId]
+      // with note + comments (page 1, including cursor and hasMore).
+      // Skip fetchComments("") to avoid redundant API call (~50% of notes need 0 fetchComments).
+      // Fallback to fetchComments("") below if Source A didn't populate comments.
+      try {
+        console.log(JSON.stringify({__bb_progress: {
+          done: i,
+          total: notes.length,
+          noteId: noteId,
+          success: null,
+          error: null,
+          stage: "source_a_check",
+          currentUrl: String(location.href || "")
+        }}));
+      } catch(e) {}
+      // Wait for comments data in store (getNoteDetailByNoteId populates noteDetailMap[noteId].comments)
       // 阶段性 progress 事件：等待 store 数据就绪
       try {
         console.log(JSON.stringify({__bb_progress: {
@@ -208,15 +196,46 @@ async function(args) {
         if (Array.isArray(cd.list) || cd.firstRequestFinish) return current;
         return null;
       }, singleNoteTimeoutMs, 200);
-      // Fallback: if comments didn't load, still extract whatever is available
+      // ── Fallback: Source A didn't populate comments, try fetchComments("") ──
       if (!detail) {
-        try {
-          var staleDetail = getStore("note")?.noteDetailMap?.[noteId];
-          if (staleDetail && staleDetail.comments) detail = staleDetail;
-        } catch(e) {}
+        if (ns && ns.noteDetailMap) {
+          delete ns.noteDetailMap[noteId];
+          try { if (ns.setCurrentNoteId) ns.setCurrentNoteId(noteId); } catch(e) {}
+        }
+        if (ns && ns.noteRequest && typeof ns.noteRequest.fetchComments === "function") {
+          try {
+            console.log(JSON.stringify({__bb_progress: {
+              done: i,
+              total: notes.length,
+              noteId: noteId,
+              success: null,
+              error: null,
+              stage: "fetch_comments_fallback",
+              currentUrl: String(location.href || "")
+            }}));
+          } catch(e) {}
+          try {
+            await withTimeout(ns.noteRequest.fetchComments.call(ns.noteRequest, noteId, ""), 6000, "fetchComments timed out");
+          } catch(e) { lastFetchError = e.message; }
+          await new Promise(function(r) { setTimeout(r, 800); });
+        }
+        // Retry waitFor for fetchComments data
+        detail = await waitFor(function() {
+          var current = getStore("note")?.noteDetailMap?.[noteId];
+          if (!current || !current.comments) return null;
+          var cd = current.comments;
+          if (Array.isArray(cd.list) || cd.firstRequestFinish) return current;
+          return null;
+        }, singleNoteTimeoutMs, 200);
+        // Last resort: extract whatever is available
+        if (!detail) {
+          try {
+            var staleDetail = getStore("note")?.noteDetailMap?.[noteId];
+            if (staleDetail && staleDetail.comments) detail = staleDetail;
+          } catch(e) {}
+        }
       }
       if (!detail) { error = "No comments data in store"; continue; }
-      if (!detail) { error = "Note detail not found in store"; continue; }
 
       // ── Page 1: extract from SPA store ──
       var commentsData = detail.comments || null;
@@ -256,6 +275,7 @@ async function(args) {
                 var newList = updated.comments.list;
                 var existingIds = {};
                 for (var ei = 0; ei < allComments.length; ei++) existingIds[allComments[ei].id] = true;
+                var newCount = 0;
                 for (var ni = 0; ni < newList.length; ni++) {
                   if (!existingIds[newList[ni].id]) {
                     var nc = newList[ni];
@@ -268,11 +288,12 @@ async function(args) {
                       sub_comment_count: Number(nc.subCommentCount ?? nc.sub_comment_count) ?? 0,
                       target_comment_id: nc.targetCommentId ?? nc.target_comment_id ?? null
                     });
+                    newCount++;
                   }
                 }
                 hasMore = Boolean(updated.comments.hasMore);
                 cursor = updated.comments.cursor || "";
-                pageOk = newList.length > 0;
+                pageOk = newCount > 0;
                 if (!hasMore) break;
               }
             } catch(e) { lastFetchError = e.message; }
