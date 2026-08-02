@@ -162,6 +162,8 @@ async function(args) {
     var noteStartTime = Date.now();
     var elapsed = 0;
     var tNav = 0, tApi = 0, tDetail = 0, tComment = 0, tPagination = 0;
+    var commentsTimeout = false;
+    var commentsDebug = null;
 
     try {
       // ── 1. router.push(/explore/{noteId}) ──
@@ -226,36 +228,51 @@ async function(args) {
 
       tNav = Date.now() - noteStartTime;
 
-      if (apiTimedOut) {
-        tApi = Date.now() - noteStartTime;
-        tDetail = tApi;
-        tComment = tApi;
-        error = "Note " + noteId + " API fetch timed out after 6000ms";
-      } else {
-        await helper.sleep(200);
-        tApi = Date.now() - noteStartTime;
+      // 无论 apiTimedOut 是否为 true，都执行 waitFor — SPA 副作用可能已加载详情
+      await helper.sleep(200);
+      tApi = Date.now() - noteStartTime;
 
-        // ── 4. waitFor: detail + first-page comments ──
-        var current = await helper.waitFor(
+      // ── 4a. Phase 1: waitFor 详情就绪（40% 预算）──
+      var detailBudget = Math.round(singleNoteTimeoutMs * 0.4);
+      var detailReady = await helper.waitFor(
+        function() {
+          var nd = helper.findNoteInDetailMap(noteId);
+          return (nd && nd.note) ? nd : null;
+        },
+        detailBudget
+      );
+      tDetail = Date.now() - noteStartTime;
+
+      if (!detailReady) {
+        error = "Note " + noteId + " detail timed out after " + detailBudget + "ms";
+      } else {
+        // ── 4b. Phase 2: waitFor 评论就绪（60% 预算）──
+        var commentBudget = Math.round(singleNoteTimeoutMs * 0.6);
+        var commentsReady = await helper.waitFor(
           function() {
             var nd = helper.findNoteInDetailMap(noteId);
-            if (!nd || !nd.note) return null;
+            if (!nd || !nd.comments) return null;
             var cm = nd.comments;
-            if (!cm) return null;
             if (cm.list && cm.list.length > 0) return nd;
             if (cm.firstRequestFinish === true) return nd;
             return null;
           },
-          singleNoteTimeoutMs
+          commentBudget
         );
-        tDetail = Date.now() - noteStartTime;
+        tComment = Date.now() - noteStartTime;
 
-        if (!current) {
-          error = "Note " + noteId + " timed out after " + singleNoteTimeoutMs + "ms";
-        } else {
-          detail = helper.toPlain(current);
-          tComment = Date.now() - noteStartTime;
+        if (!commentsReady) {
+          commentsTimeout = true;
+          var nd = helper.findNoteInDetailMap(noteId);
+          commentsDebug = {
+            comments_exists: !!(nd && nd.comments),
+            list_length: (nd && nd.comments && nd.comments.list) ? nd.comments.list.length : 0,
+            first_request_finish: (nd && nd.comments) ? nd.comments.firstRequestFinish : null,
+            has_more: (nd && nd.comments) ? nd.comments.hasMore : null
+          };
         }
+
+        detail = helper.toPlain(detailReady);
       }
 
       elapsed = Date.now() - noteStartTime;
@@ -387,6 +404,8 @@ async function(args) {
         _diagnostics: {
           elapsed_ms: elapsed,
           slow: elapsed > 5000,
+          comments_timeout: commentsTimeout,
+          comments_debug: commentsDebug,
           breakdown_ms: {
             nav: tNav,
             api: tApi - tNav,
