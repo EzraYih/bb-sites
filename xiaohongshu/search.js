@@ -491,6 +491,7 @@ async function(args) {
     let jitterSleepMs = 0;
     let diagnosticLogged = false;
     const roundDurations = [];
+    const roundDiagnostics = [];
 
     async function waitForStoreToSettle(previousFeedsLength, previousPage) {
       await helper.waitFor(() => {
@@ -533,7 +534,13 @@ async function(args) {
         }));
       }
       await waitForStoreToSettle(previousFeedsLength, previousPage);
+      const afterFeedsLength = Array.isArray(searchStore.feeds) ? searchStore.feeds.length : 0;
       roundDurations.push(Date.now() - roundStartedAt);
+      roundDiagnostics.push({
+        captured_items: Array.isArray(captured?.data?.items) ? captured.data.items.length : 0,
+        feeds_before: previousFeedsLength,
+        feeds_after: afterFeedsLength,
+      });
       requestCount += 1;
     }
 
@@ -553,6 +560,7 @@ async function(args) {
     searchStore.__bbJitterSleeps = jitterSleeps;
     searchStore.__bbJitterSleepMs = jitterSleepMs;
     searchStore.__bbRoundDurations = roundDurations;
+    searchStore.__bbRoundDiagnostics = roundDiagnostics;
     searchStore.__bbSearchSessionId = searchSessionId;
   } finally {
     XMLHttpRequest.prototype.open = origOpen;
@@ -561,16 +569,14 @@ async function(args) {
   }
 
   const accumulatedFeeds = helper.toPlain(searchStore.feeds || []);
-  const rawItems = Array.isArray(accumulatedFeeds) && accumulatedFeeds.length > 0
-    ? accumulatedFeeds
-    : Array.isArray(captured?.data?.items)
-      ? captured.data.items
-      : [];
+  const capturedItems = Array.isArray(captured?.data?.items) ? captured.data.items : [];
 
-  helper.rememberNoteTokens(rawItems);
+  // Cache xsec_tokens from ALL accumulated feeds (not just this round)
+  helper.rememberNoteTokens(accumulatedFeeds);
+
+  // Build notes from THIS ROUND's API response only (delta)
   const capturedItemIndex = (() => {
     const index = new Map();
-    const capturedItems = Array.isArray(captured?.data?.items) ? captured.data.items : [];
     for (const item of capturedItems) {
       const mapped = helper.mapNoteCardItem(item);
       if (mapped?.note_id) index.set(mapped.note_id, mapped);
@@ -578,7 +584,7 @@ async function(args) {
     return index;
   })();
 
-  const notes = (Array.isArray(rawItems) ? rawItems : [])
+  const notes = capturedItems
     .map((item) => {
       const mapped = helper.mapNoteCardItem(item);
       if (!mapped?.note_id) return null;
@@ -603,6 +609,9 @@ async function(args) {
   const jitterSleeps = searchStore.__bbJitterSleeps ?? 0;
   const jitterSleepMs = searchStore.__bbJitterSleepMs ?? 0;
   const roundDurations = Array.isArray(searchStore.__bbRoundDurations) ? searchStore.__bbRoundDurations : [Date.now() - startedAt];
+  const roundDiagnostics = Array.isArray(searchStore.__bbRoundDiagnostics)
+    ? searchStore.__bbRoundDiagnostics.map((d) => helper.toPlain(d))
+    : [];
   const hasMore = captured?.data?.has_more ?? searchStore?.hasMore ?? false;
   const stopReason = notes.length === 0
     ? "search_failed"
@@ -620,14 +629,21 @@ async function(args) {
     search_session_id: searchSessionId,
     count: notes.length,
     added_count: notes.length,
-    total_unique_count: notes.length,
+    total_unique_count: Array.isArray(accumulatedFeeds) ? accumulatedFeeds.length : notes.length,
     has_more: hasMore,
     stop_reason: stopReason,
     request_count: requestCount,
     jitter_sleeps: jitterSleeps,
     jitter_sleep_ms: jitterSleepMs,
     round_durations_ms: roundDurations,
-    frontier_note_ids: notes.slice(-5).map((note) => note.note_id),
+    round_diagnostics: roundDiagnostics,
+    frontier_note_ids: (Array.isArray(accumulatedFeeds) ? accumulatedFeeds : [])
+      .slice(-5)
+      .map((item) => {
+        const mapped = helper.mapNoteCardItem(item);
+        return mapped?.note_id;
+      })
+      .filter(Boolean),
     frontier_matched: null,
     notes
   };
