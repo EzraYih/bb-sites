@@ -122,8 +122,8 @@ async function(args) {
     };
   }
 
-  var router = helper.getRouter();
-  if (!router) return { error: "Router not available: page not fully loaded" };
+  var router = await helper.waitFor(function() { return helper.getRouter(); }, 15000, 500);
+  if (!router) return { error: "Router not available: page not fully loaded (waited 15s)" };
 
   var collected = [], failures = [], remaining = [];
   var consecutiveFailures = 0;
@@ -441,12 +441,15 @@ async function(args) {
     }
 
     // ── 8. progress 事件 ──
+    // 包含完整笔记数据（note 字段），以便子进程被 Ctrl+C 杀死时父进程可从 stdout 恢复数据
     try {
+      var lastCollected = collected[collected.length - 1];
       console.log(JSON.stringify({__bb_progress: {
         done: i + 1, total: notes.length, noteId: noteId,
         success: !!detail && !!detail.note, error: error || null,
-        commentCount: detail && detail.note ? (collected[collected.length - 1]?.comments_data?.length || 0) : 0,
+        commentCount: detail && detail.note ? (lastCollected?.comments_data?.length || 0) : 0,
         collected: collected.length, failures: failures.length,
+        note: lastCollected || null,
         currentUrl: String(location.href || ""), stage: "note_complete"
       }}));
     } catch(e) {}

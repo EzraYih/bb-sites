@@ -503,7 +503,9 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
     }
 
     // Emit progress for streaming consumers (bb-browser --progress polls console)
+    // 包含完整笔记数据（note 字段），以便子进程被 Ctrl+C 杀死时父进程可从 stdout 恢复数据
     try {
+      var lastCollectedDetail = collected[collected.length - 1];
       console.log(JSON.stringify({__bb_progress: {
         done: i + 1,
         total: notes.length,
@@ -512,6 +514,7 @@ if (/300013|300017|安全限制|访问链接异常/.test(bodyText)) {
         error: error || null,
         collected: collected.length,
         failures: failures.length,
+        note: lastCollectedDetail || null,
         currentUrl: String(location.href || ""),
         stage: "note_complete"
       }}));

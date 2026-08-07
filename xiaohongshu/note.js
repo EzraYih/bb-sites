@@ -348,13 +348,14 @@ async function(args) {
     ]);
   }
 
-  const pinia = helper.getPinia();
-  const userStore = helper.getStore("user");
+  const pinia = await helper.waitFor(() => helper.getPinia()?._s, 15000, 500);
+  if (!pinia) {
+    return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded (waited 15s)" };
+  }
+
+  const userStore = await helper.waitFor(() => helper.getStore("user"), 15000, 500);
   helper.assertNoManualVerification?.();
   if (!userStore?.loggedIn) return { error: "Not logged in", hint: "Run: bb-browser open https://www.xiaohongshu.com/explore — then log in manually" };
-  if (!pinia?._s) {
-    return { error: "Page not ready", hint: "Ensure xiaohongshu.com is fully loaded" };
-  }
 
   const resolved = helper.resolveNoteIdentity(args.note_id);
   if (!resolved.noteId) {

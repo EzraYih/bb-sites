@@ -247,7 +247,9 @@ async function(args) {
     }
 
     // Emit progress for streaming consumers
+    // 包含完整用户数据（user 字段），以便子进程被 Ctrl+C 杀死时父进程可从 stdout 恢复数据
     try {
+      var lastCollectedUser = collected[collected.length - 1];
       console.log(JSON.stringify({__bb_progress: {
         done: i + 1,
         total: users.length,
@@ -256,6 +258,7 @@ async function(args) {
         error: error || null,
         collected: collected.length,
         failures: failures.length,
+        user: lastCollectedUser || null,
         currentUrl: String(location.href || ""),
         stage: "user_complete"
       }}));
