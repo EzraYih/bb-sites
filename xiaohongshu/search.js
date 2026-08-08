@@ -9,7 +9,9 @@
     "resume_mode": {"required": false, "description": "Resume mode: start, warm, cold, auto"},
     "search_session_id": {"required": false, "description": "Previous search session id"},
     "expected_frontier_note_ids": {"required": false, "description": "Expected frontier note ids for cold catch-up"},
-    "time_budget_ms": {"required": false, "description": "Time budget for this call in milliseconds"}
+    "time_budget_ms": {"required": false, "description": "Time budget for this call in milliseconds"},
+    "load_more_jitter_min_ms": {"required": false, "description": "Min jitter delay before loadMore in milliseconds"},
+    "load_more_jitter_max_ms": {"required": false, "description": "Max jitter delay before loadMore in milliseconds"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -395,10 +397,6 @@ async function(args) {
   };
 
   const searchKeyword = args.keyword;
-  function pickJitterSleepMs() {
-    if (jitterMaxMs <= jitterMinMs) return jitterMinMs;
-    return Math.floor(Math.random() * (jitterMaxMs - jitterMinMs + 1)) + jitterMinMs;
-  }
 
   XMLHttpRequest.prototype.send = function(body) {
     if (String(this.__bbUrl || "").includes("search/notes")) {
@@ -468,6 +466,7 @@ async function(args) {
     const activeFilters = buildActiveFilters(availableFilters, appliedFilterParams);
 
     if (!canWarmResume) {
+      searchStore.resetSearchNoteStore?.();
       searchStore.mutateSearchValue?.(args.keyword);
       if (searchStore.searchContext) {
         searchStore.searchContext.keyword = args.keyword;
@@ -488,8 +487,6 @@ async function(args) {
     }
 
     let requestCount = 0;
-    let jitterSleeps = 0;
-    let jitterSleepMs = 0;
     let diagnosticLogged = false;
     const roundDurations = [];
     const roundDiagnostics = [];
@@ -549,8 +546,6 @@ async function(args) {
       if (canWarmResume && searchStore.loadMore) {
         searchStore.loadMore();
       } else if (searchStore.searchNotes) {
-        searchStore.resetSearchNoteStore?.();
-        if (searchStore.feeds) searchStore.feeds = [];
         searchStore.searchNotes();
       } else if (searchStore.loadMore) {
         searchStore.loadMore();
@@ -558,8 +553,6 @@ async function(args) {
     });
 
     searchStore.__bbRequestCount = requestCount;
-    searchStore.__bbJitterSleeps = jitterSleeps;
-    searchStore.__bbJitterSleepMs = jitterSleepMs;
     searchStore.__bbRoundDurations = roundDurations;
     searchStore.__bbRoundDiagnostics = roundDiagnostics;
     searchStore.__bbSearchSessionId = searchSessionId;
@@ -607,8 +600,6 @@ async function(args) {
   }
 
   const requestCount = searchStore.__bbRequestCount ?? 1;
-  const jitterSleeps = searchStore.__bbJitterSleeps ?? 0;
-  const jitterSleepMs = searchStore.__bbJitterSleepMs ?? 0;
   const roundDurations = Array.isArray(searchStore.__bbRoundDurations) ? searchStore.__bbRoundDurations : [Date.now() - startedAt];
   const roundDiagnostics = Array.isArray(searchStore.__bbRoundDiagnostics)
     ? searchStore.__bbRoundDiagnostics.map((d) => helper.toPlain(d))
@@ -634,8 +625,6 @@ async function(args) {
     has_more: hasMore,
     stop_reason: stopReason,
     request_count: requestCount,
-    jitter_sleeps: jitterSleeps,
-    jitter_sleep_ms: jitterSleepMs,
     round_durations_ms: roundDurations,
     round_diagnostics: roundDiagnostics,
     frontier_note_ids: (Array.isArray(accumulatedFeeds) ? accumulatedFeeds : [])
