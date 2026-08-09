@@ -8,7 +8,6 @@
     "sort": {"required": false, "description": "Sort: general (default), latest, likes, comments, collects"},
     "resume_mode": {"required": false, "description": "Resume mode: start, warm, cold, auto"},
     "search_session_id": {"required": false, "description": "Previous search session id"},
-    "expected_frontier_note_ids": {"required": false, "description": "Expected frontier note ids for cold catch-up"},
     "time_budget_ms": {"required": false, "description": "Time budget for this call in milliseconds"},
     "load_more_jitter_min_ms": {"required": false, "description": "Min jitter delay before loadMore in milliseconds"},
     "load_more_jitter_max_ms": {"required": false, "description": "Max jitter delay before loadMore in milliseconds"}
