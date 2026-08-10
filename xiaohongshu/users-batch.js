@@ -113,15 +113,16 @@ async function(args) {
     return { sleep, getStore, getRouter, waitFor, fetchViaSPA, extractDetail };
   })());
 
-  // SPA 两阶段自愈（与 notes-batch.js 一致）
+  // SPA 就绪检查（与 notes-batch.js 一致 — 无两阶段重试）
+  // prepareDetailTab 已确认 SPA 就绪。此处失败说明 SPA 在批次执行期间崩溃或 Pinia 退化。
+  // 不执行 location.href / router.push 自愈 —
+  //   location.href 会摧毁 CDP 执行上下文（b8e5fde 已证明）；
+  //   router.push 是客户端导航，无法重新初始化 Pinia。
+  // 直接返回错误，由工作流层降级并发并整批回退。
   var appReady = await helper.waitFor(function() { return helper.getStore("user"); }, 8000, 300);
   if (!appReady) {
-    try { var r = helper.getRouter(); if (r) r.push({ path: "/explore" }); } catch(e) {}
-    await helper.sleep(3000);
-    appReady = await helper.waitFor(function() { return helper.getStore("user"); }, 12000, 500);
-  }
-  if (!appReady) {
-    return { error: "SPA not ready", hint: "User store not available after retry" };
+    console.log(JSON.stringify({ type: "progress", stage: "spa_not_ready", done: 0, total: (typeof args.users === "string" ? (JSON.parse(args.users).length) : (args.users || []).length), url: location.href, readyState: document.readyState, hasApp: !!document.querySelector('#app'), hasVueApp: !!document.querySelector('#app')?.__vue_app__, hasPinia: !!document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia, storeNames: Array.from(document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia?._s?.keys?.() || []) }));
+    return { error: "SPA not ready", hint: "User store not available" };
   }
 
   var userStore = helper.getStore("user");
